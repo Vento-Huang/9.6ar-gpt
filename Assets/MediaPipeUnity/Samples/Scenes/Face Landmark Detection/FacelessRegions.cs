@@ -1,12 +1,12 @@
 using UnityEngine;
 
 /// <summary>
-/// Eleven feature regions in camera-texture pixels. The face contour is ONLY a
+/// Fifteen local regions in camera-texture pixels. The face contour is ONLY a
 /// safety boundary: it never supplies the positive coverage of the effect.
 /// </summary>
 public sealed class FacelessRegions
 {
-    public const int Count = 11;
+    public const int Count = 15;
     // Upper, middle and lower cheek on each side. The old 117/346 patches
     // overlapped the eye-region core, so they could not provide clean skin.
     static readonly int[] DonorIndices = {123,187,192,352,411,416};
@@ -35,7 +35,15 @@ public sealed class FacelessRegions
         // Marionette folds: lip corner down the central lower cheek, stopping
         // above the chin perimeter. Jaw angles and outer cheek are not anchors.
         new[] {61,57,43,202,106,204,211,194},
-        new[] {291,287,273,422,335,424,431,418}
+        new[] {291,287,273,422,335,424,431,418},
+        // Inner cheek highlights between the lower eye and nasolabial regions.
+        // Keep the clean outer cheek donors and the face perimeter available.
+        new[] {118,119,100,101,50,205,36},
+        new[] {347,348,329,330,280,425,266},
+        // The two lower chin highlights, inside the jaw's visible edge. These
+        // bridge the central chin to its side transitions, not the jaw angles.
+        new[] {32,208,140},
+        new[] {262,428,369}
     };
     public readonly Vector4[] Centers = new Vector4[Count]; // xy center, zw core half-size
     public readonly Vector4[] Axes = new Vector4[Count]; // xy local X, z feather (pixels)
@@ -87,6 +95,10 @@ public sealed class FacelessRegions
         FitFold(8, p, p[287] - p[423], scale, featherFraction);
         FitFold(9, p, p[211] - p[61], scale, featherFraction);
         FitFold(10, p, p[431] - p[291], scale, featherFraction);
+        Fit(11, p, p[100] - p[50], scale, featherFraction);
+        Fit(12, p, p[329] - p[280], scale, featherFraction);
+        Fit(13, p, p[208] - p[140], scale, featherFraction);
+        Fit(14, p, p[428] - p[369], scale, featherFraction);
 
         // Symmetric cheek patches. Avoid nose folds, lips and the forehead/hair.
         for (int i = 0; i < 6; i++)
@@ -121,7 +133,9 @@ public sealed class FacelessRegions
         Vector2 r = (max - min) * 0.5f;
         // The core must contain the whole brow and OUTER lip, even with closed
         // eyes/mouth. Core width does not depend on eyelid or lip opening alone.
-        r += Vector2.one * (Width * 0.022f);
+        // Lower chin skin sits close to the real silhouette. Give those two
+        // patches their own padding instead of growing the existing face mask.
+        r += Vector2.one * (Width * (index >= 13 ? 0.020f : 0.022f));
         r.x = Mathf.Max(r.x, Width * (index == 2 ? 0.060f : index == 6 ? 0.095f : 0.018f));
         r.y = Mathf.Max(r.y, Height * (index == 4 ? 0.052f : 0.015f));
         // Enclose every source landmark in a rounded rectangle (L4 norm).
@@ -137,7 +151,8 @@ public sealed class FacelessRegions
         Vector2 center = x * c.x + y * c.y;
         Centers[index] = new Vector4(center.x, center.y, r.x, r.y);
         // Far-side regions contract with their OWN projected width on head turns.
-        float edge = Mathf.Min(Width * feather, Mathf.Max(Width * 0.013f, r.x * 0.75f));
+        float localEdge = index >= 13 ? Mathf.Min(r.x, r.y) * 0.45f : r.x * 0.75f;
+        float edge = Mathf.Min(Width * feather, Mathf.Max(Width * 0.013f, localEdge));
         Axes[index] = new Vector4(x.x, x.y, edge, 0);
     }
 

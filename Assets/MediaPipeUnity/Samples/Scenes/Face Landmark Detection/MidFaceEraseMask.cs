@@ -28,6 +28,8 @@ public class MidFaceEraseMask : MonoBehaviour
     [Range(0f, 0.12f)] public float volume = 0f;
     [Tooltip("Preserve spatial cheek lighting before reconstructing missing skin. Zero disables this illumination trend for comparison.")]
     [Range(0f, 1f)] public float localColorStrength = 1f;
+    [Tooltip("Soften isolated bright skin reflections relative to nearby cheek lighting. Keeps ordinary gradients and shadows.")]
+    [Range(0f, 1f)] public float highlightSuppression = 0.85f;
     [Range(0f, 1f)] public float fineGrain = 0.35f;
     [Tooltip("Only the smooth skin field is downsampled. Original video and mask edges stay at native resolution.")]
     public int reconstructionResolution = 256;
@@ -337,6 +339,8 @@ public class MidFaceEraseMask : MonoBehaviour
         _stages[6] = Ramp(t, 12, 15);
         _stages[7] = _stages[8] = Ramp(t, 6, 9); // nose-side folds
         _stages[9] = _stages[10] = Ramp(t, 9, 12); // below mouth corners
+        _stages[11] = _stages[12] = Ramp(t, 6, 9); // inner upper-cheek reflections
+        _stages[13] = _stages[14] = Ramp(t, 12, 15); // inner chin transitions
         if (IsTracking) GrowthProgress = Ramp(t, 15, 24);
     }
     static float Ramp(float t, float a, float b) => Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(a, b, t));
@@ -383,6 +387,7 @@ public class MidFaceEraseMask : MonoBehaviour
     {
         _regions.SetMaterial(_reconstruction);
         _reconstruction.SetFloat("_LocalColorStrength", localColorStrength);
+        _reconstruction.SetFloat("_HighlightSuppression", highlightSuppression);
         _reconstruction.SetVector("_CameraSize", new Vector4(_cameraWidth,_cameraHeight,1f/_cameraWidth,1f/_cameraHeight));
         RenderTexture previous = RenderTexture.active;
         bool srgb = GL.sRGBWrite;

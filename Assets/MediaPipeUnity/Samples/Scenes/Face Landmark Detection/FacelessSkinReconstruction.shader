@@ -10,7 +10,7 @@ Shader "Hidden/Faceless/SkinReconstruction"
         sampler2D _MainTex, _KnownTex, _DonorTex, _HistoryTex, _GuideTex;
         float4 _MainTex_TexelSize;
         float2 _Direction;
-        float _TemporalWeight, _LocalColorStrength;
+        float _TemporalWeight, _LocalColorStrength, _HighlightSuppression;
 
         float4 Gaussian(float2 uv)
         {
@@ -106,6 +106,18 @@ Shader "Hidden/Faceless/SkinReconstruction"
                 float ratio = FacelessSkinLuma(source) / max(FacelessSkinLuma(localReference), 0.005);
                 confidence *= smoothstep(0.24, 0.52, ratio) * (1.0 - smoothstep(2.5, 4.0, ratio));
             }
+            // Small specular patches should not be stretched into the missing
+            // skin as bright islands. Preserve the fitted broad lighting and
+            // all negative residuals; use a smooth shoulder only for positive
+            // outliers. Scaling RGB together preserves the sample's hue.
+            float sourceLuma = FacelessSkinLuma(source);
+            float referenceLuma = FacelessSkinLuma(illumination.rgb / max(_LocalColorStrength, 0.01));
+            float shoulder = 0.035 + max(referenceLuma, 0.0) * 0.18;
+            float excess = max(sourceLuma - referenceLuma - shoulder, 0.0);
+            float compressedExcess = shoulder * (1.0 - exp(-excess / shoulder));
+            float correction = (excess - compressedExcess) * saturate(_HighlightSuppression)
+                * _LocalColorStrength * illumination.a;
+            source *= max(sourceLuma - correction, 0.0) / max(sourceLuma, 0.00001);
             // Reconstruct the deviation from local illumination; adding the
             // guide back later preserves gradients across wide missing regions.
             float3 residual = source - illumination.rgb;

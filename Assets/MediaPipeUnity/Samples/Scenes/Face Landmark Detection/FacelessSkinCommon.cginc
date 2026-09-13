@@ -1,6 +1,6 @@
 #ifndef FACELESS_SKIN_COMMON
 #define FACELESS_SKIN_COMMON
-#define FACELESS_REGION_COUNT 11
+#define FACELESS_REGION_COUNT 15
 float4 _CameraSize;
 float4 _FrameOrigin, _FrameU, _FrameV;
 float4 _Regions[FACELESS_REGION_COUNT], _RegionAxes[FACELESS_REGION_COUNT], _Boundary[36], _Donors[6];

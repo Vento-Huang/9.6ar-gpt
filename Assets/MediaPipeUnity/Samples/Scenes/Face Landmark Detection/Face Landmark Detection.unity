@@ -1119,6 +1119,7 @@ MonoBehaviour:
   featherFraction: 0.09
   volume: 0
   localColorStrength: 1
+  highlightSuppression: 0.85
   fineGrain: 0.35
   reconstructionResolution: 256
   colorSmoothingSeconds: 0.065

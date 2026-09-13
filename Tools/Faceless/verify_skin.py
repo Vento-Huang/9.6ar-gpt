@@ -74,14 +74,15 @@ def fit_regions(points):
     u=right*width*1.25;v=up*max(height,frame_max[1]-frame_min[1])*1.16
     def perp(v): return np.array([v[1],-v[0]])
     axes=[p[133]-p[33],p[263]-p[362],right,p[327]-p[98],p[291]-p[61],p[291]-p[61],right,
-          perp(p[57]-p[203]),perp(p[287]-p[423]),perp(p[211]-p[61]),perp(p[431]-p[291])]
+          perp(p[57]-p[203]),perp(p[287]-p[423]),perp(p[211]-p[61]),perp(p[431]-p[291]),
+          p[100]-p[50],p[329]-p[280],p[208]-p[140],p[428]-p[369]]
     assert len(ids)==len(axes)==int(re.search(r'const int Count = (\d+)',source)[1])
     centers=[]; aa=[]
     for i,(group,x) in enumerate(zip(ids,axes)):
         x=x/np.linalg.norm(x) if x@x>.01 else u/np.linalg.norm(u)
         y=np.array([-x[1],x[0]])
         q=np.stack((p[group]@x,p[group]@y),axis=-1)
-        low=q.min(0);high=q.max(0);c=(low+high)/2;r=(high-low)/2+width*.022
+        low=q.min(0);high=q.max(0);c=(low+high)/2;r=(high-low)/2+width*(.020 if i>=13 else .022)
         r[0]=max(r[0],width*(.060 if i==2 else .095 if i==6 else .018))
         r[1]=max(r[1],height*(.052 if i==4 else .015))
         enclosure=max(1,float(((np.abs(q-c)/r)**4).sum(-1).max()**.25)*1.08)
@@ -89,7 +90,7 @@ def fit_regions(points):
         if i==5:r[0]*=1.10
         center=x*c[0]+y*c[1]
         centers.append([*center,*r])
-        edge=min(width*.09,max(width*.013,r[0]*.75))
+        edge=min(width*.09,max(width*.013,min(r)*.45 if i>=13 else r[0]*.75))
         aa.append([*x,edge,0])
     donor_ids=list(map(int,re.findall(r'\d+',source.split('DonorIndices =')[1].split('};')[0])))
     donors=np.array([[*p[i],width*.016,0] for i in donor_ids])
@@ -265,7 +266,7 @@ def color_gradient_tests(work,surface,tex,render,read,reconstruct,seed_texture,d
     points=canonical[:,:2]*15+np.array([size*.48,size*.53])
     values,groups=fit_regions(points)
     values.update(_CameraSize=[size,size,1/size,1/size],_Amount=1.,_Volume=0.,_Grain=0.,
-                  _ShowMask=0.,_Stages=np.ones(len(groups)),_VideoVisibility=1.,_LocalColorStrength=1.)
+                  _ShowMask=0.,_Stages=np.ones(len(groups)),_VideoVisibility=1.,_LocalColorStrength=1.,_HighlightSuppression=.85)
     surface_texture=tex((size,size));surface.render(points,surface_texture)
     output=tex((size,size));white=tex((4,4),np.ones((4,4,4)))
     black=tex((size,size),np.dstack((np.zeros((size,size,3)),np.ones((size,size)))))
@@ -287,7 +288,7 @@ def color_gradient_tests(work,surface,tex,render,read,reconstruct,seed_texture,d
     # Damage lies wholly inside the excluded feature core; the clean surroundings
     # carry the exact continuous lighting that should extend into the hole.
     strokes&=alpha>.9999
-    feature_ids=[159,386,1,13,14,105,334,206,426,202,422]
+    feature_ids=[159,386,1,13,14,105,334,206,426,202,422,50,280,140,369]
     report={}
     def save(name,rgb):
         Image.fromarray((np.clip(rgb[::-1],0,1)*255).astype('uint8')).save(work/name)
@@ -342,8 +343,141 @@ def color_gradient_tests(work,surface,tex,render,read,reconstruct,seed_texture,d
         baseline=outcomes['baseline'];actual=outcomes['local_color']
         for metric in ['core_rmse','feather_rmse','quadrant_mean_rmse','feather_gradient_rmse']:
             assert actual[metric]<baseline[metric],(fixture,metric,actual[metric],baseline[metric])
-        assert actual['relative_quadrant_variation']>.5,(fixture,'color collapsed',actual)
+        assert actual['relative_quadrant_variation']>.85,(fixture,'color collapsed',actual)
     assert report['affine']['local_color']['core_rmse']<.012,report['affine']
+    return report
+
+def highlight_tests(work,surface,tex,render,read,reconstruct,seed_texture,donor_texture):
+    """Small highlights on known skin gradients, not a photographic oracle.
+
+    Coverage A/B disables only the new region stages and uses the same filled
+    texture. A second A/B holds all regions fixed and changes only highlight
+    compression, to distinguish wider coverage from altered color processing.
+    """
+    canonical=np.array([[float(x) for x in row.split()[1:]]
+                       for row in (work/'canonical_face_model.obj').read_text().splitlines()
+                       if row.startswith('v ')])
+    canonical-=canonical.mean(0)
+    size=384;points=canonical[:,:2]*15+np.array([size*.48,size*.53])
+    values,groups=fit_regions(points)
+    values.update(_CameraSize=[size,size,1/size,1/size],_Amount=1.,_Volume=0.,_Grain=0.,
+                  _ShowMask=0.,_Stages=np.ones(len(groups)),_VideoVisibility=1.,
+                  _LocalColorStrength=1.,_HighlightSuppression=.85)
+    surface_texture=tex((size,size));surface.render(points,surface_texture)
+    output=tex((size,size));white=tex((4,4),np.ones((4,4,4)))
+    black=tex((size,size),np.dstack((np.zeros((size,size,3)),np.ones((size,size)))))
+    def coverage(stages):
+        render('frag',black,output,{'_SkinTex':white,'_SurfaceTex':surface_texture},dict(values,_Stages=stages))
+        return read(output)[:,:,0]
+    stages=np.ones(len(groups));old_stages=stages.copy();old_stages[11:]=0
+    alpha=coverage(stages);old_alpha=coverage(old_stages)
+    new_only=np.zeros(len(groups));new_only[11:]=1
+    boundary_alpha=pixel_sample(coverage(new_only),np.array(values['_Boundary'])[:,:2])
+    yy,xx=np.mgrid[:size,:size];pixels=np.stack((xx+.5,yy+.5),axis=-1)
+    origin=np.array(values['_FrameOrigin'][:2]);width,height=values['_FrameOrigin'][2:]
+    x=(pixels[:,:,0]-origin[0])/width;y=(pixels[:,:,1]-origin[1])/height
+    clean=np.array([.58,.405,.305])+x[:,:,None]*np.array([.22,.12,.07])+y[:,:,None]*np.array([.12,.105,.075])
+    clean-=np.exp(-(((x+.18)/.42)**2+((y-.05)/.58)**2))[:,:,None]*np.array([.085,.07225,.0595])
+    luma=np.array([.2126,.7152,.0722]);core=alpha>.995
+    surface_coverage=read(surface_texture)[:,:,0]
+    outside=distance_transform_edt(surface_coverage<.5)>=2
+    def save(name,rgb):
+        Image.fromarray((np.clip(rgb[::-1],0,1)*255).astype('uint8')).save(work/name)
+    def composite(source,skin,case):
+        render('frag',source,output,{'_SkinTex':skin,'_SurfaceTex':surface_texture},case)
+        actual=read(output)[:,:,:3];assert np.isfinite(actual).all()
+        return actual
+    def rmse(error,area):return float(np.sqrt(np.mean(error[area]**2)))
+    # These named anatomical points are fixed independently of the fitted mask
+    # center, so a misplaced region cannot move the oracle along with itself.
+    target_ids=[50,280,140,369]
+    hotspots=np.zeros((size,size))
+    for point in points[target_ids]:
+        hotspots=np.maximum(hotspots,np.exp(-(((pixels-point)/(width*.024))**2).sum(-1)*.5))
+    dirty=np.clip(clean+hotspots[:,:,None]*.3,0,1)
+    source=tex((size,size),np.dstack((dirty,np.ones((size,size)))))
+    skin=reconstruct(source,values)
+    actual=composite(source,skin,values)
+    old_actual=composite(source,skin,dict(values,_Stages=old_stages))
+    area=hotspots>.6
+    target_coverage=pixel_sample(alpha,points[target_ids])
+    target_old_coverage=pixel_sample(old_alpha,points[target_ids])
+    coverage_report={'anatomical_target_landmarks':target_ids,
+                     'target_alpha':target_coverage.tolist(),'previous_stages_alpha':target_old_coverage.tolist(),
+                     'input_highlight_luma_excess':float(((dirty-clean)@luma)[area].mean()),
+                     'previous_stages_rmse':rmse(old_actual-clean,area),'expanded_stages_rmse':rmse(actual-clean,area),
+                     'expanded_positive_luma_excess':float(np.maximum((actual-clean)@luma,0)[area].mean()),
+                     'outside_surface_max_error':float(np.abs(actual[outside]-dirty[outside]).max()),
+                     'new_regions_boundary_max_alpha':float(boundary_alpha.max())}
+    coverage_report['per_target']=[]
+    for landmark in target_ids:
+        local_area=(((pixels-points[landmark])**2).sum(-1)<(width*.024)**2)
+        coverage_report['per_target'].append({'landmark':landmark,
+            'min_alpha':float(alpha[local_area].min()),'mean_alpha':float(alpha[local_area].mean()),
+            'rmse':rmse(actual-clean,local_area),
+            'positive_luma_excess':float(np.maximum((actual-clean)@luma,0)[local_area].mean()),
+            'outside_surface_fraction':float((surface_coverage[local_area]<.5).mean())})
+    save('highlight-coverage-comparison.png',np.concatenate((dirty,old_actual,actual,clean),axis=1))
+    # Place a bright source in the soft edge, away from cheek donors and the
+    # silhouette. This exercises seed compression; fully excluded highlights
+    # above exercise coverage instead, and must not be confused with it.
+    base_source=tex((size,size),np.dstack((clean,np.ones((size,size)))))
+    reconstruct(base_source,values)
+    seed=read(seed_texture)
+    u=np.array(values['_FrameU'][:2]);v=np.array(values['_FrameV'][:2])
+    delta=pixels-origin
+    atlas=np.stack((delta@u/(u@u),delta@v/(v@v)),axis=-1)+.5
+    confidence=pixel_sample(seed[:,:,3],atlas.reshape(-1,2)*seed_texture.width).reshape(size,size)
+    donor_pixels=np.array(values['_Donors'])[:,:2]
+    donor_distance=np.sqrt(((pixels[:,:,None,:]-donor_pixels)**2).sum(-1)).min(-1)
+    candidates=(alpha>.3)&(alpha<.7)&(confidence>.65)&(donor_distance>width*.065)&(np.abs(x)<.42)
+    assert candidates.sum()>10,('no eligible independent highlight source',int(candidates.sum()))
+    # Favor the brightest blend fraction with valid source confidence. This
+    # chooses a source-to-effect edge, not a core hole or an unmodified pixel.
+    score=np.where(candidates,alpha,-1)
+    sy,sx=np.unravel_index(np.argmax(score),score.shape);center=pixels[sy,sx]
+    seed_hotspot=np.exp(-(((pixels-center)/(width*.025))**2).sum(-1)*.5)
+    dirty=np.clip(clean+seed_hotspot[:,:,None]*.31,0,1)
+    source=tex((size,size),np.dstack((dirty,np.ones((size,size)))))
+    influence=(seed_hotspot>.08)&(alpha>.1);outcomes={};images={}
+    for label,strength in [('uncompressed',0.),('compressed',.85)]:
+        case=dict(values,_HighlightSuppression=strength)
+        skin=reconstruct(source,case);actual=composite(source,skin,case)
+        outcomes[label]={'influence_rmse':rmse(actual-clean,influence),
+                         'core_rmse':rmse(actual-clean,core),
+                         'positive_luma_excess':float(np.maximum((actual-clean)@luma,0)[influence].mean()),
+                         'outside_surface_max_error':float(np.abs(actual[outside]-dirty[outside]).max())}
+        images[label]=actual
+    save('highlight-source-comparison.png',np.concatenate((dirty,images['uncompressed'],images['compressed'],clean),axis=1))
+    donor_profiles=[]
+    for yaw in [-70,-45,0,45,70]:
+        angle=np.deg2rad(yaw)
+        rotation=np.array([[np.cos(angle),0,np.sin(angle)],[0,1,0],[-np.sin(angle),0,np.cos(angle)]])
+        rotated=canonical@rotation.T
+        projected=rotated[:,:2]*(600/(45-rotated[:,2]))[:,None]+np.array([size*.48,size*.53])
+        case,_=fit_regions(projected);case=dict(values,**case)
+        surface.render(projected,surface_texture)
+        skin=reconstruct(base_source,case)
+        actual=composite(base_source,skin,case)
+        confidences=read(donor_texture)[0,:,3]
+        donor_profiles.append({'yaw':yaw,'confidences':confidences.tolist(),
+                               'max_confidence':float(confidences.max()),
+                               'finite_color':bool(np.isfinite(actual).all())})
+    report={'synthetic_only':True,'unity_editor_tested':False,'metal_tested':False,
+            'coverage':coverage_report,'seed_source_pixel':center.tolist(),
+            'seed_source_confidence':float(confidence[sy,sx]),'source_compression':outcomes,
+            'profile_donors':donor_profiles}
+    (work/'highlight-checks.json').write_text(json.dumps(report,indent=2));print('highlight checks:',json.dumps(report))
+    assert min(target_coverage)>.995,coverage_report
+    assert coverage_report['expanded_stages_rmse']<coverage_report['previous_stages_rmse'],coverage_report
+    assert coverage_report['expanded_positive_luma_excess']<coverage_report['input_highlight_luma_excess']*.25,coverage_report
+    assert coverage_report['outside_surface_max_error']<1e-5,coverage_report
+    assert coverage_report['new_regions_boundary_max_alpha']<.01,coverage_report
+    assert outcomes['compressed']['influence_rmse']<outcomes['uncompressed']['influence_rmse'],outcomes
+    assert outcomes['compressed']['positive_luma_excess']<outcomes['uncompressed']['positive_luma_excess'],outcomes
+    assert outcomes['compressed']['outside_surface_max_error']<1e-5,outcomes
+    for case in donor_profiles:
+        assert case['max_confidence']>.02,('all cheek color sources lost',case)
     return report
 
 def main():
@@ -368,7 +502,7 @@ def main():
     points[:,0]*=w;points[:,1]=(1-points[:,1])*h
     vals,groups=fit_regions(points)
     vals.update(_CameraSize=[w,h,1/w,1/h],_Amount=1.,_Volume=0.,_Grain=0.,_ShowMask=0.,
-                _Color=[1,1,1,1],_Stages=np.ones(len(groups)),_VideoVisibility=1.,_LocalColorStrength=1.)
+                _Color=[1,1,1,1],_Stages=np.ones(len(groups)),_VideoVisibility=1.,_LocalColorStrength=1.,_HighlightSuppression=.85)
     buffer=ctx.buffer(np.array([-1,-1,1,-1,-1,1,1,1],dtype='f4').tobytes())
     programs={}
     for name in ['fragDonors','fragGuide','fragSeeds','fragGaussian','fragNormalize','fragPull',
@@ -430,7 +564,7 @@ def main():
     origin=np.array(vals['_FrameOrigin'][:2])
     u=np.array(vals['_FrameU'][:2]);v=np.array(vals['_FrameV'][:2])
     excluded=[]
-    for landmark in [159,386,1,13,14,105,334,206,426,202,422]:
+    for landmark in [159,386,1,13,14,105,334,206,426,202,422,50,280,140,369]:
         delta=points[landmark]-origin
         atlas=np.array([delta@u/(u@u),delta@v/(v@v)])+.5
         x,y=np.clip((atlas*256).astype(int),0,255)
@@ -451,11 +585,12 @@ def main():
     assert outside_error<1e-5,outside_error
     profiles=synthetic_projection_tests(ctx,a.work,surface,tex,render,read)
     color_report=color_gradient_tests(a.work,surface,tex,render,read,reconstruct,known[0],donors)
+    highlight_report=highlight_tests(a.work,surface,tex,render,read,reconstruct,known[0],donors)
     stats={'fragment_programs':len(programs),'surface_vertex_and_fragment_compiled':True,
            'hlsl_reserved_name_lint':checked,'passthrough_max_error':err,'outside_max_error':outside_error,
            'zero_source_confidence_landmarks':excluded,
            'finite_output':True,'unity_editor_tested':False,'metal_tested':False,
-           'synthetic_profiles':profiles,'synthetic_color':color_report}
+           'synthetic_profiles':profiles,'synthetic_color':color_report,'synthetic_highlights':highlight_report}
     (a.work/'checks.json').write_text(json.dumps(stats,indent=2));print(stats)
 
 if __name__=='__main__':main()
