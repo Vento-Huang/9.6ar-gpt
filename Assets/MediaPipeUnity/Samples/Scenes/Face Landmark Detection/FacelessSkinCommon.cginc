@@ -5,6 +5,7 @@ float4 _CameraSize;
 float4 _FrameOrigin, _FrameU, _FrameV;
 float4 _Regions[FACELESS_REGION_COUNT], _RegionAxes[FACELESS_REGION_COUNT], _Boundary[36], _Donors[6];
 float _ContourInset;
+sampler2D _InteriorTex;
 
 float2 AtlasToPixel(float2 uv)
 {
@@ -15,6 +16,13 @@ float2 PixelToAtlas(float2 p)
     p -= _FrameOrigin.xy;
     return float2(dot(p, _FrameU.xy) / dot(_FrameU.xy, _FrameU.xy),
                   dot(p, _FrameV.xy) / dot(_FrameV.xy, _FrameV.xy)) + 0.5;
+}
+// Only enclosed gaps and a transition INSIDE already opaque region cores.
+// A bilinear sample can fall to 1/4 at the corner of a one-cell hole. Restore
+// its plateau without enlarging the texture's nonzero support into soft edges.
+float InteriorCoverage(float2 p)
+{
+    return saturate(tex2D(_InteriorTex, PixelToAtlas(p)).r * 4.0);
 }
 float RegionDistance(float2 p, int n)
 {
@@ -62,10 +70,21 @@ float BoundaryGuard(float2 p)
 float TrustedSkinWeight(float2 p)
 {
     float confidence = BoundaryGuard(p);
+    float uncovered = 1.0;
     [unroll] for (int n = 0; n < FACELESS_REGION_COUNT; n++)
-        confidence *= smoothstep(0.0, max(_RegionAxes[n].z, 1.0) * 0.45, RegionDistance(p, n));
+    {
+        float distanceToRegion = RegionDistance(p, n);
+        confidence *= smoothstep(0.0, max(_RegionAxes[n].z, 1.0) * 0.45, distanceToRegion);
+        uncovered *= smoothstep(0.0, max(_RegionAxes[n].z, 0.5), distanceToRegion);
+    }
+    // Soft regions can jointly cover a seam even when no single region owns
+    // its core. Do not reconstruct from those original feature/highlight
+    // pixels: >=95% combined coverage excludes them; <=85% preserves the old
+    // eligibility. This changes source selection, never the outside mask.
+    confidence *= smoothstep(0.05, 0.15, uncovered);
     float heightOnFace = dot(p - _FrameOrigin.xy, normalize(_FrameV.xy));
-    return confidence * (1.0 - smoothstep(_FrameV.z, _FrameV.z + _FrameOrigin.w * 0.025, heightOnFace));
+    return confidence * (1.0 - InteriorCoverage(p))
+        * (1.0 - smoothstep(_FrameV.z, _FrameV.z + _FrameOrigin.w * 0.025, heightOnFace));
 }
 // Unique name: UnityCG.cginc already declares Luminance. On targets where
 // half/fixed map to float, overloading that name can become a redefinition.

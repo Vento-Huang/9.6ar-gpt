@@ -55,6 +55,10 @@ Shader "Faceless/SkinComposite"
                 {
                     float uncovered = 1.0;
                     [unroll] for (int n=0;n<FACELESS_REGION_COUNT;n++) uncovered *= 1.0-RegionAlpha(p,n)*_Stages[n];
+                    // Complete only closed interior seams. Existing analytic
+                    // regions still define every outside edge and its feather.
+                    // During entry this finishes with the chin at 12-15 s.
+                    float localCoverage = max(1.0-uncovered, InteriorCoverage(p)*_Stages[6]);
                     // The face oval is an anatomical ring, not the visible
                     // silhouette on a turn. Use the actual projected triangle
                     // surface here; keep the oval inset ONLY for donor seeds.
@@ -63,7 +67,7 @@ Shader "Faceless/SkinComposite"
                         + tex2D(_SurfaceTex, i.uv - edgeTap).r
                         + tex2D(_SurfaceTex, i.uv + float2(edgeTap.x, -edgeTap.y)).r
                         + tex2D(_SurfaceTex, i.uv + float2(-edgeTap.x, edgeTap.y)).r) * 0.25;
-                    amount = (1.0-uncovered) * surfaceCoverage * _Amount;
+                    amount = localCoverage * surfaceCoverage * _Amount;
                     if (amount > 0.00001)
                     {
                         float3 skin = tex2D(_SkinTex,atlas).rgb;

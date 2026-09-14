@@ -11,11 +11,13 @@ Metal's vertex convention, detection accuracy and temporal tracking are not
 simulated. Head turns below are synthetic canonical model projections.
 """
 import argparse, json, re, textwrap
+from collections import deque
 from pathlib import Path
 import numpy as np
 from PIL import Image
 import moderngl
-from scipy.ndimage import distance_transform_edt, map_coordinates
+from scipy.ndimage import (distance_transform_edt, map_coordinates, binary_fill_holes,
+                           binary_dilation, label)
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "Assets/MediaPipeUnity/Samples/Scenes/Face Landmark Detection"
@@ -145,6 +147,49 @@ class SurfaceGuard:
 def pixel_sample(field,points):
     """Native pixel coordinates (not array index centers), bilinear sampling."""
     return map_coordinates(field,[points[:,1]-.5,points[:,0]-.5],order=1,mode='nearest')
+
+def interior_field(values, size=256, check_flood=False):
+    """CPU texture adapter, not a Unity/C# execution claim.
+
+    A cell is solid only when its four corners belong to one convex L4 core.
+    scipy's independent 8-connected fill is checked against a queue flood, the
+    form used by the C# implementation. No region radius or surface changes.
+    """
+    yy,xx=np.mgrid[:size,:size]
+    origin=np.array(values['_FrameOrigin'][:2])
+    u=np.array(values['_FrameU'][:2]);v=np.array(values['_FrameV'][:2])
+    corners=[origin+((xx+dx)/size-.5)[:,:,None]*u+((yy+dy)/size-.5)[:,:,None]*v
+             for dx,dy in [(0,0),(1,0),(0,1),(1,1)]]
+    solid=np.zeros((size,size),dtype=bool)
+    for region,axis in zip(values['_Regions'],values['_RegionAxes']):
+        inside=np.ones((size,size),dtype=bool)
+        for corner in corners:
+            delta=corner-region[:2]
+            qx=delta@axis[:2]/region[2]
+            qy=delta@np.array([-axis[1],axis[0]])/region[3]
+            qx2=qx*qx;qy2=qy*qy
+            inside&=(qx2*qx2+qy2*qy2<=.99999)
+        solid|=inside
+    filled=binary_fill_holes(solid,structure=np.ones((3,3)))
+    holes=filled&~solid;outside=~filled
+    if check_flood:
+        flood=np.zeros_like(solid);queue=deque()
+        for x,y in [(x,y) for x in range(size) for y in (0,size-1)]+[(x,y) for y in range(size) for x in (0,size-1)]:
+            if not solid[y,x] and not flood[y,x]:flood[y,x]=True;queue.append((x,y))
+        while queue:
+            x,y=queue.popleft()
+            for dy in (-1,0,1):
+                for dx in (-1,0,1):
+                    nx,ny=x+dx,y+dy
+                    if 0<=nx<size and 0<=ny<size and not solid[ny,nx] and not flood[ny,nx]:
+                        flood[ny,nx]=True;queue.append((nx,ny))
+        assert np.array_equal(flood,outside),'8-connected queue/scipy flood disagree'
+    safe=~binary_dilation(outside,structure=np.ones((3,3)),border_value=1)
+    first=binary_dilation(holes,structure=np.ones((3,3)))&solid&safe
+    second=binary_dilation(first,structure=np.ones((3,3)))&solid&safe&~first
+    field=np.where(holes|first,1.,np.where(second,128/255.,0.))
+    assert np.all(field[holes]==1.) and not np.any(field[outside]),'fill escaped its closed hole/core'
+    return field,solid,holes,outside
 
 def old_boundary_guard(points,values):
     polygon=values['_Boundary'][:,:2]
@@ -480,8 +525,169 @@ def highlight_tests(work,surface,tex,render,read,reconstruct,seed_texture,donor_
         assert case['max_confidence']>.02,('all cheek color sources lost',case)
     return report
 
+def interior_tests(work,surface,tex,render,read,reconstruct,seed_texture):
+    """Closed central gaps: coverage, source exclusion and temporal carry-over.
+
+    Old coverage is rendered with a zero interior texture. Its exterior is then
+    fixed before rendering the new result; the new mask cannot redefine the
+    exterior oracle. The color fixture is an analytic gradient plus a bright
+    spot at the independently diagnosed yaw-45 nose gap.
+    """
+    canonical=np.array([[float(x) for x in row.split()[1:]]
+                       for row in (work/'canonical_face_model.obj').read_text().splitlines()
+                       if row.startswith('v ')])
+    canonical-=canonical.mean(0)
+    size=384;mask=tex((size,size));output=tex((size,size))
+    white=tex((4,4),np.ones((4,4,4)))
+    zero=tex((4,4),np.zeros((4,4,4)))
+    black=tex((size,size),np.dstack((np.zeros((size,size,3)),np.ones((size,size)))))
+    yy,xx=np.mgrid[:size,:size];pixels=np.stack((xx+.5,yy+.5),axis=-1)
+    cases=[];fixed_case=None;topology_evidence=[];soft_channels=[]
+    calm=tex((size,size),np.ones((size,size,4))*[.58,.405,.305,1.])
+    for yaw in [-60,-50,-45,-30,-20,-10,0,10,20,30,45,50,60]:
+      for pitch in [-20,0,20]:
+        y,p=np.deg2rad([yaw,pitch])
+        ry=np.array([[np.cos(y),0,np.sin(y)],[0,1,0],[-np.sin(y),0,np.cos(y)]])
+        rx=np.array([[1,0,0],[0,np.cos(p),-np.sin(p)],[0,np.sin(p),np.cos(p)]])
+        rotated=canonical@(rx@ry).T
+        points=rotated[:,:2]*(600/(45-rotated[:,2]))[:,None]+[184,204]
+        values,groups=fit_regions(points)
+        values.update(_CameraSize=[size,size,1/size,1/size],_Amount=1.,_Volume=0.,_Grain=0.,
+                      _ShowMask=0.,_Stages=np.ones(len(groups)),_VideoVisibility=1.,
+                      _LocalColorStrength=1.,_HighlightSuppression=.85)
+        field,solid,holes,outside=interior_field(values,check_flood=True)
+        fill=tex((256,256),np.repeat(field[:,:,None],4,axis=-1))
+        surface.render(points,mask)
+        bindings={'_SkinTex':white,'_SurfaceTex':mask}
+        render('frag',black,output,dict(bindings,_InteriorTex=zero),values)
+        old=read(output)[:,:,0]
+        render('frag',black,output,dict(bindings,_InteriorTex=fill),values)
+        new=read(output)[:,:,0]
+        # Fix the previous near-opaque mask first. A native center-only raster
+        # may falsely close a real narrow channel; any unresolved near-opaque
+        # gap is separately diagnosed at 4x density below, not silently dropped.
+        old_core=old>=.99999
+        old_exterior=~binary_fill_holes(old_core,structure=np.ones((3,3)))
+        exterior_error=float(np.abs(new-old)[old_exterior].max())
+        assert exterior_error<1.1e-5,('old exterior changed',yaw,pitch,exterior_error)
+        old_holes=binary_fill_holes(old_core,structure=np.ones((3,3)))&~old_core
+        old_holes&=distance_transform_edt(read(mask)[:,:,0]>.5)>=2
+        min_gap_alpha=float(new[old_holes].min()) if old_holes.any() else 1.
+        # Raster-scale holes with a conservative opaque barrier must be filled.
+        # Inspect every atlas hole center in the actual composite as a separate
+        # oracle, including holes which the native near-opaque threshold hides.
+        coords=np.argwhere(holes)
+        origin=np.array(values['_FrameOrigin'][:2]);u=np.array(values['_FrameU'][:2]);v=np.array(values['_FrameV'][:2])
+        hole_pixels=origin+((coords[:,1]+.5)/256-.5)[:,None]*u+((coords[:,0]+.5)/256-.5)[:,None]*v
+        safe_distance=distance_transform_edt(read(mask)[:,:,0]>.5)
+        eligible=pixel_sample(safe_distance,hole_pixels)>=2 if len(coords) else np.array([],dtype=bool)
+        sampled=pixel_sample(new,hole_pixels[eligible]) if eligible.any() else np.array([1.])
+        assert sampled.min()>.999,('atlas hole remains',yaw,pitch,float(sampled.min()))
+        if min_gap_alpha<.999:
+            iy,ix=np.unravel_index(np.where(old_holes,new,2.).argmin(),new.shape)
+            probe=np.array([ix+.5,iy+.5])
+            for factor in [1,4]:
+                if factor==1:dense=old
+                else:
+                    dense_output=tex((size*factor,size*factor))
+                    render('frag',black,dense_output,dict(bindings,_InteriorTex=zero),values)
+                    dense=read(dense_output)[:,:,0];dense_output.release()
+                dx,dy=np.floor(probe*factor).astype(int)
+                for remaining in [1e-5,1e-4]:
+                    barrier=dense>=1-remaining
+                    closed=binary_fill_holes(barrier,structure=np.ones((3,3)))&~barrier
+                    topology_evidence.append({'yaw':yaw,'pitch':pitch,'probe_pixel':probe.tolist(),
+                        'sampling_factor':factor,'barrier_remaining_alpha':remaining,
+                        'probe_is_closed_hole':bool(closed[dy,dx])})
+            reconstruct(calm,values,fill)
+            delta=probe-origin
+            atlas=(np.array([delta@u/(u@u),delta@v/(v@v)])+.5)*256
+            source_weight=float(pixel_sample(read(seed_texture)[:,:,3],atlas[None])[0])
+            assert source_weight<1e-6,('near-opaque source leaks',yaw,pitch,probe.tolist(),source_weight)
+            soft_channels.append({'yaw':yaw,'pitch':pitch,'pixel':probe.tolist(),
+                'remaining_composite_alpha':float(new[iy,ix]),'source_confidence':source_weight,
+                'closed_at_4x_1e5':topology_evidence[-2]['probe_is_closed_hole'],
+                'closed_at_4x_1e4':topology_evidence[-1]['probe_is_closed_hole']})
+        assert not np.any(new+1e-6<old),('coverage lost',yaw,pitch)
+        cases.append({'yaw':yaw,'pitch':pitch,'atlas_hole_cells':int(holes.sum()),
+                      'old_native_hole_pixels':int(old_holes.sum()),'old_native_gap_min_alpha':min_gap_alpha,
+                      'filled_atlas_min_alpha':float(sampled.min()),'old_exterior_max_delta':exterior_error})
+        if yaw==45 and pitch==0:fixed_case=(values,points,field,fill,old,new,holes,outside)
+        else:fill.release()
+    values,points,field,fill,old,new,holes,outside=fixed_case
+    surface.render(points,mask)
+    origin=np.array(values['_FrameOrigin'][:2]);width,height=values['_FrameOrigin'][2:]
+    u=np.array(values['_FrameU'][:2]);v=np.array(values['_FrameV'][:2])
+    def atlas_pixels(p):
+        delta=p-origin
+        return (np.stack((delta@u/(u@u),delta@v/(v@v)),axis=-1)+.5)*256
+    gap=np.array([185.5,174.5])
+    x=(pixels[:,:,0]-origin[0])/width;y=(pixels[:,:,1]-origin[1])/height
+    clean=np.array([.58,.405,.305])+x[:,:,None]*np.array([.22,.12,.07])+y[:,:,None]*np.array([.12,.105,.075])
+    hotspot=np.exp(-(((pixels-gap)/1.25)**2).sum(-1)*.5)
+    dirty=np.clip(clean+hotspot[:,:,None]*.30,0,1)
+    source=tex((size,size),np.dstack((dirty,np.ones((size,size)))))
+    images={};outcomes={};area=hotspot>.15
+    for name,interior in [('previous',zero),('filled',fill)]:
+        skin=reconstruct(source,values,interior,legacy_source_gate=(name=='previous'))
+        confidence=read(seed_texture)[:,:,3]
+        render('frag',source,output,{'_SkinTex':skin,'_SurfaceTex':mask,'_InteriorTex':interior},values)
+        image=read(output)[:,:,:3];images[name]=image
+        outcomes[name]={'gap_source_confidence':float(pixel_sample(confidence,atlas_pixels(gap[None]))[0]),
+                        'gap_coverage':float(pixel_sample(old if name=='previous' else new,gap[None])[0]),
+                        'bright_spot_rmse':float(np.sqrt(np.mean((image[area]-clean[area])**2))),
+                        'bright_spot_positive_rgb_error':float(np.maximum(image[area]-clean[area],0).mean())}
+    assert outcomes['previous']['gap_source_confidence']>.02,outcomes
+    assert outcomes['filled']['gap_source_confidence']<1e-6,outcomes
+    assert outcomes['filled']['gap_coverage']>.99999,outcomes
+    assert outcomes['filled']['bright_spot_rmse']<outcomes['previous']['bright_spot_rmse']*.5,outcomes
+    Image.fromarray((np.clip(np.concatenate((dirty,images['previous'],images['filled'],clean),axis=1)[::-1],0,1)*255).astype('uint8')).save(work/'interior-color-comparison.png')
+    # A precomputed fill texture must not reveal the erasure before entry stage 6.
+    stages=np.zeros(len(values['_Stages']))
+    render('frag',source,output,{'_SkinTex':white,'_SurfaceTex':mask,'_InteriorTex':fill},dict(values,_Stages=stages))
+    early_error=float(np.abs(read(output)[:,:,:3]-dirty).max());assert early_error<1e-5
+    stages=np.ones_like(stages);stages[6]=0
+    stage_errors=[]
+    for t in [0.,.25,.5,.75,1.]:
+        stages[6]=t
+        render('frag',black,output,{'_SkinTex':white,'_SurfaceTex':mask,'_InteriorTex':zero},dict(values,_Stages=stages))
+        baseline=read(output)[:,:,0]
+        render('frag',black,output,{'_SkinTex':white,'_SurfaceTex':mask,'_InteriorTex':fill},dict(values,_Stages=stages))
+        actual=read(output)[:,:,0]
+        stage_errors.append(float(np.abs(actual-baseline).max()))
+        assert not np.any(actual+1e-6<baseline)
+    assert stage_errors[0]<1e-6,stage_errors
+    # A small stale bright island would evade the original exposure-change gate.
+    # The new temporal rule must use the current color only inside the fill.
+    current=np.ones((256,256,4))*[.5,.35,.25,1.]
+    history=current.copy();history[:,:,:3]+=.025
+    now=tex((256,256),current);previous=tex((256,256),history);temporal=tex((256,256))
+    render('fragTemporal',now,temporal,{'_HistoryTex':previous,'_InteriorTex':zero},dict(values,_TemporalWeight=.15))
+    old_temporal=read(temporal)
+    render('fragTemporal',now,temporal,{'_HistoryTex':previous,'_InteriorTex':fill},dict(values,_TemporalWeight=.15))
+    new_temporal=read(temporal)
+    temporal_gap_error=float(np.abs(new_temporal[holes]-current[holes]).max())
+    temporal_exterior_delta=float(np.abs(new_temporal[field==0]-old_temporal[field==0]).max())
+    assert temporal_gap_error<1e-6 and temporal_exterior_delta<1e-6
+    assert np.abs(old_temporal[holes]-current[holes]).max()>.01
+    report={'synthetic_only':True,'csharp_execution_tested':False,'unity_editor_tested':False,'metal_tested':False,
+            'poses':cases,'pose_count':len(cases),'native_oracle_near_opaque_alpha':.99999,
+            'old_exterior_allowed_opacity_delta':1.1e-5,
+            'native_raster_false_closure_evidence':topology_evidence,
+            'near_opaque_soft_seams_not_expanded':soft_channels,
+            'known_gap_pixel':gap.tolist(),'color_gap':outcomes,
+            'entry_all_stages_zero_max_error':early_error,'entry_stage_fill_deltas':stage_errors,
+            'temporal_current_gap_max_error':temporal_gap_error,'temporal_exterior_max_delta':temporal_exterior_delta}
+    (work/'interior-checks.json').write_text(json.dumps(report,indent=2))
+    print('interior checks:',json.dumps({k:v for k,v in report.items() if k!='poses'}))
+    diagnostic=[case for case in topology_evidence if case['yaw']==-20 and case['pitch']==0]
+    assert [case['probe_is_closed_hole'] for case in diagnostic]==[True,True,False,True],diagnostic
+    return report
+
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--work',type=Path,required=True);ap.add_argument('--egl');a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--work',type=Path,required=True);ap.add_argument('--egl')
+    ap.add_argument('--interior-only',action='store_true',help='Run new gap regression after the common shader smoke checks')
+    a=ap.parse_args()
     kwargs={'backend':'egl'}
     if a.egl:kwargs['libegl']=a.egl
     # GLSL permits some HLSL reserved names: catch that known translation blind
@@ -506,18 +712,27 @@ def main():
     buffer=ctx.buffer(np.array([-1,-1,1,-1,-1,1,1,1],dtype='f4').tobytes())
     programs={}
     for name in ['fragDonors','fragGuide','fragSeeds','fragGaussian','fragNormalize','fragPull',
-                 'fragRelax','fragTemporal','fragRestoreColor','frag']:
+                 'fragRelax','fragTemporal','fragRestoreColor','frag','legacy_fragDonors','legacy_fragSeeds']:
         composite=name=='frag'
         body=shader_body(composite)
+        entry=name
+        if name.startswith('legacy_'):
+            # Deliberately isolated A/B baseline: disable only the newly added
+            # union source gate; a zero _InteriorTex restores the earlier source
+            # confidence formula. Production programs above run verbatim.
+            gate='confidence *= smoothstep(0.05, 0.15, uncovered);'
+            assert body.count(gate)==1,'source-gate A/B fixture must be reviewed after a formula change'
+            body=body.replace(gate,'confidence *= 1.0;')
+            entry=name.removeprefix('legacy_')
         setup='v2f i; i.uv=uv; i.color=vec4(1); i.local=vec4(0);' if composite else 'v2f_img i; i.uv=uv;'
         # Model the UnityCG symbol that the original standalone harness omitted.
         # This deliberately fails if the project reintroduces a duplicate helper.
         builtin='float Luminance(vec3 c){return dot(c,vec3(0.22,0.707,0.071));}\n'
-        frag='#version 330\n#define saturate(x) clamp(x,0.0,1.0)\nin vec2 uv; out vec4 result;\n'+builtin+body+'\nvoid main(){'+setup+'result='+name+'(i);}'
+        frag='#version 330\n#define saturate(x) clamp(x,0.0,1.0)\nin vec2 uv; out vec4 result;\n'+builtin+body+'\nvoid main(){'+setup+'result='+entry+'(i);}'
         (a.work/(name+'.glsl')).write_text(frag)
         prog=ctx.program(vertex_shader=VERT,fragment_shader=frag)
         programs[name]=(prog,ctx.simple_vertex_array(prog,buffer,'position'))
-    print('compiled fragment programs:',len(programs))
+    print('compiled production fragment programs:',len(programs)-2,'; legacy A/B programs: 2')
     def tex(size,data=None):
         t=ctx.texture(size,4,None if data is None else data.astype('f4').tobytes(),dtype='f4')
         t.filter=(moderngl.LINEAR,moderngl.LINEAR);t.repeat_x=t.repeat_y=False
@@ -525,14 +740,29 @@ def main():
     original=tex((w,h),np.dstack((image,np.ones((h,w)))))
     surface=SurfaceGuard(ctx,a.work)
     surface_texture=tex((w,h));surface.render(points,surface_texture)
+    interior_texture=tex((256,256))
+    last_interior_key=None
+    def current_interior(values):
+        nonlocal last_interior_key
+        key=b''.join(np.asarray(values[name],dtype='f4').tobytes() for name in
+                     ['_Regions','_RegionAxes','_FrameOrigin','_FrameU','_FrameV'])
+        if key!=last_interior_key:
+            field,_,_,_=interior_field(values)
+            interior_texture.write(np.repeat(field[:,:,None],4,axis=-1).astype('f4').tobytes())
+            last_interior_key=key
+        return interior_texture
     def render(name,src,target,bindings=None,values=None):
         prog,vao=programs[name]
-        for key,value in dict(vals,**(values or {})).items():
+        all_values=dict(vals,**(values or {}))
+        for key,value in all_values.items():
             if key not in prog:continue
             arr=np.array(value,dtype='f4')
             if arr.ndim>1 or key=='_Stages':prog[key].write(arr.tobytes())
             else:prog[key].value=float(arr) if arr.ndim==0 else tuple(arr)
-        for unit,(key,t) in enumerate(dict(_MainTex=src,**(bindings or {})).items()):
+        actual_bindings=dict(_MainTex=src,**(bindings or {}))
+        if '_InteriorTex' in prog and '_InteriorTex' not in actual_bindings:
+            actual_bindings['_InteriorTex']=current_interior(all_values)
+        for unit,(key,t) in enumerate(actual_bindings.items()):
             if key in prog:t.use(unit);prog[key].value=unit
         if '_MainTex_TexelSize' in prog:prog['_MainTex_TexelSize'].value=(1/src.width,1/src.height,src.width,src.height)
         fb=ctx.framebuffer(color_attachments=[target]);fb.use();ctx.viewport=(0,0,target.width,target.height)
@@ -540,10 +770,12 @@ def main():
     donors=tex((6,1));guide=tex((256,256));restored=tex((256,256))
     sizes=[256,128,64,32,16,8,4]
     known=[tex((s,s)) for s in sizes];temp=[tex((s,s)) for s in sizes];filled=[tex((s,s)) for s in sizes]
-    def reconstruct(source,values):
-        render('fragDonors',source,donors,values=values)
+    def reconstruct(source,values,interior=None,legacy_source_gate=False):
+        extra={} if interior is None else {'_InteriorTex':interior}
+        prefix='legacy_' if legacy_source_gate else ''
+        render(prefix+'fragDonors',source,donors,extra,values)
         render('fragGuide',source,guide,{'_DonorTex':donors},values)
-        render('fragSeeds',source,known[0],{'_DonorTex':donors,'_GuideTex':guide},values)
+        render(prefix+'fragSeeds',source,known[0],{'_DonorTex':donors,'_GuideTex':guide,**extra},values)
         for i in range(len(sizes)-1):
             render('fragGaussian',known[i],temp[i],values=dict(values,_Direction=[1,0]))
             render('fragGaussian',temp[i],known[i+1],values=dict(values,_Direction=[0,1]))
@@ -583,14 +815,19 @@ def main():
     outside=(xx<b[0]-2)|(xx>b[2]+2)|(yy<b[1]-2)|(yy>b[3]+2)
     outside_error=float(np.max(np.abs(result[:,:,:3][outside]-image[outside])))
     assert outside_error<1e-5,outside_error
+    if a.interior_only:
+        interior_tests(a.work,surface,tex,render,read,reconstruct,known[0])
+        return
     profiles=synthetic_projection_tests(ctx,a.work,surface,tex,render,read)
     color_report=color_gradient_tests(a.work,surface,tex,render,read,reconstruct,known[0],donors)
     highlight_report=highlight_tests(a.work,surface,tex,render,read,reconstruct,known[0],donors)
-    stats={'fragment_programs':len(programs),'surface_vertex_and_fragment_compiled':True,
+    interior_report=interior_tests(a.work,surface,tex,render,read,reconstruct,known[0])
+    stats={'fragment_programs':len(programs)-2,'legacy_source_ab_programs':2,'surface_vertex_and_fragment_compiled':True,
            'hlsl_reserved_name_lint':checked,'passthrough_max_error':err,'outside_max_error':outside_error,
            'zero_source_confidence_landmarks':excluded,
            'finite_output':True,'unity_editor_tested':False,'metal_tested':False,
-           'synthetic_profiles':profiles,'synthetic_color':color_report,'synthetic_highlights':highlight_report}
+           'synthetic_profiles':profiles,'synthetic_color':color_report,'synthetic_highlights':highlight_report,
+           'synthetic_interior':interior_report}
     (a.work/'checks.json').write_text(json.dumps(stats,indent=2));print(stats)
 
 if __name__=='__main__':main()

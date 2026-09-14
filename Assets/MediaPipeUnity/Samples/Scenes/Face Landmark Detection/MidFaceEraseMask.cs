@@ -57,6 +57,7 @@ public class MidFaceEraseMask : MonoBehaviour
 
     readonly FacelessRegions _regions = new FacelessRegions();
     readonly FacelessSurface _surface = new FacelessSurface();
+    readonly FacelessInterior _interior = new FacelessInterior();
     readonly Vector2[] _points = new Vector2[468];
     readonly Vector2[] _lastRaw = new Vector2[468];
     readonly Vector2[] _velocity = new Vector2[468];
@@ -385,7 +386,11 @@ public class MidFaceEraseMask : MonoBehaviour
 
     void RenderSkin(Texture source, float dt)
     {
+        // CPU geometry only, cached for unchanged landmarks; no video readback.
+        // Use this same frame's interior mask for sampling and composition.
+        _interior.Build(_regions);
         _regions.SetMaterial(_reconstruction);
+        _reconstruction.SetTexture("_InteriorTex", _interior.Texture);
         _reconstruction.SetFloat("_LocalColorStrength", localColorStrength);
         _reconstruction.SetFloat("_HighlightSuppression", highlightSuppression);
         _reconstruction.SetVector("_CameraSize", new Vector4(_cameraWidth,_cameraHeight,1f/_cameraWidth,1f/_cameraHeight));
@@ -446,6 +451,7 @@ public class MidFaceEraseMask : MonoBehaviour
         m.SetFloatArray("_Stages",_stages);
         m.SetTexture("_SkinTex",_history[_historyIndex]);
         m.SetTexture("_SurfaceTex",_surface.Texture);
+        m.SetTexture("_InteriorTex",_interior.Texture);
         m.SetFloat("_Volume",volume); m.SetFloat("_Grain",fineGrain);
         m.SetFloat("_ShowMask",showMask ? 1f : 0f);
     }
@@ -520,6 +526,7 @@ public class MidFaceEraseMask : MonoBehaviour
         _boundImage=false;
         RestoreVisuals(); ReleaseTextures();
         _surface.Dispose();
+        _interior.Dispose();
         if (_reconstruction!=null) Destroy(_reconstruction);
         if (_composite!=null) Destroy(_composite);
         _reconstruction=_composite=null;

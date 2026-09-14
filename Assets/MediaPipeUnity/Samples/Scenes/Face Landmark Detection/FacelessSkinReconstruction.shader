@@ -152,6 +152,10 @@ Shader "Hidden/Faceless/SkinReconstruction"
             // Face-local history, reset on loss/reacquisition. Exposure changes
             // accelerate convergence rather than leaving a gray trail.
             float t = lerp(_TemporalWeight, 1.0, smoothstep(0.035, 0.16, change));
+            // A gap moves relative to the rectangular atlas on a head turn.
+            // Never carry an earlier pose's source-color island into a freshly
+            // filled gap. The rest of the skin keeps temporal smoothing.
+            t = max(t, InteriorCoverage(AtlasToPixel(i.uv)));
             return float4(lerp(previous, current, t), 1);
         }
         float4 fragRestoreColor(v2f_img i) : SV_Target
