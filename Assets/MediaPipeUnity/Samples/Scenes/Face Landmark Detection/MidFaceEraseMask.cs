@@ -37,9 +37,11 @@ public class MidFaceEraseMask : MonoBehaviour
     [Range(2f, 10f)] public float landmarkCutoff = 4f;
 
     [Header("Entry timeline / 入场渐变")]
-    [Tooltip("Off: judge the final look immediately. On: normal 0-3 s, eyes 3-6, nose 6-9, mouth 9-12, complete 12-15.")]
-    public bool playEntryAnimation = false;
-    public float resetAfterAbsence = 1.2f;
+    [Tooltip("Fade from the live face to the existing final skin. All regions and enclosed gaps transition together.")]
+    public bool playEntryAnimation = true;
+    [Min(0.1f)] public float entryDurationSeconds = 2f;
+    [Tooltip("Replay after this many seconds without a detected face. Short tracking losses preserve entry progress; this is not person identification.")]
+    [Min(0.5f)] public float resetAfterAbsence = 3f;
     [Range(0.08f, 0.5f)] public float lostFaceFadeSeconds = 0.18f;
 
     [Header("Debug / 调试")]
@@ -50,8 +52,10 @@ public class MidFaceEraseMask : MonoBehaviour
     public bool IsTracking { get; private set; }
     public float FacePresence { get; private set; }
     public float PresentationSeconds { get; private set; }
+    public float EntryProgress => playEntryAnimation ? Ramp(PresentationSeconds, 0f, EntryDuration) : 1f;
     public float GrowthProgress { get; private set; }
-    public bool GrowthReady => IsTracking && playEntryAnimation && PresentationSeconds >= 15f;
+    public bool GrowthReady => IsTracking && playEntryAnimation && PresentationSeconds >= EntryDuration;
+    float EntryDuration => Mathf.Max(0.1f, entryDurationSeconds);
     public Matrix4x4 HeadPose => _controller != null ? _controller.FacePose : Matrix4x4.identity;
     public event Action<MidFaceEraseMask> FrameUpdated;
 
@@ -71,7 +75,7 @@ public class MidFaceEraseMask : MonoBehaviour
     RenderTexture[] _known, _temp, _filled, _history;
     RenderTexture _donorTexture, _guideTexture;
     int _historyIndex, _version = -1, _size, _cameraWidth, _cameraHeight;
-    bool _historyReady, _pointsReady, _boundImage, _maskReady;
+    bool _historyReady, _pointsReady, _boundImage, _maskReady, _entryFrameReady, _replayRequested;
     float _nextFind, _lastLandmarkTime, _lastSeen = -100f;
     float _nextShaderCheck;
     float _videoVisibility = 1f;
@@ -88,8 +92,11 @@ public class MidFaceEraseMask : MonoBehaviour
         _version = -1;
         Array.Clear(_landmarkTransforms, 0, _landmarkTransforms.Length);
         _pointsReady = _historyReady = _maskReady = false;
+        _lastSeen = -100f;
+        IsTracking = false;
+        _replayRequested = false;
         FacePresence = 0;
-        PresentationSeconds = GrowthProgress = 0;
+        ResetEntryClock();
         if (reconstructionShader == null) reconstructionShader = Shader.Find("Hidden/Faceless/SkinReconstruction");
         if (compositeShader == null) compositeShader = Shader.Find("Faceless/SkinComposite");
         if (surfaceShader == null) surfaceShader = Shader.Find("Hidden/Faceless/SurfaceGuard");
@@ -209,6 +216,8 @@ public class MidFaceEraseMask : MonoBehaviour
             // over the new session's initial black capture buffer.
             _pointsReady = _historyReady = _maskReady = false;
             FacePresence = _videoVisibility = 0f;
+            _lastSeen = -100f;
+            ResetEntryClock();
         }
         bool valid = _controller != null && _controller.HasFace
             && now - _controller.LastResultTime < 0.5f
@@ -219,11 +228,16 @@ public class MidFaceEraseMask : MonoBehaviour
         if (valid)
         {
             bool reacquired = now - _lastSeen > 0.5f;
-            // A back/profile turn is indistinguishable from absence to a
-            // single face detector. Do not reveal features by automatically
-            // restarting the entry timeline on a paired-preview reacquisition.
-            if (!paired && now - _lastSeen > resetAfterAbsence)
-            { PresentationSeconds = 0; GrowthProgress = 0; }
+            if (_replayRequested)
+            {
+                playEntryAnimation = true;
+                ResetEntryClock();
+                _replayRequested = false;
+            }
+            // Reset only on reacquisition, never while displaying the held
+            // lost-face frame. Brief turns keep the current erasure intact.
+            if (now - _lastSeen > Mathf.Max(0.5f, resetAfterAbsence))
+                ResetEntryClock();
             if (reacquired) _pointsReady = _historyReady = false;
             _lastSeen = now;
             if (_version != _controller.ResultVersion || !_pointsReady)
@@ -237,7 +251,6 @@ public class MidFaceEraseMask : MonoBehaviour
                 && _regions.Build(_points, maskScale, featherFraction);
             FacePresence = paired ? 1f : Mathf.MoveTowards(FacePresence, 1f, dt / 0.18f);
             _videoVisibility = Mathf.MoveTowards(_videoVisibility, 1f, dt / 0.18f);
-            PresentationSeconds += dt;
         }
         else
         {
@@ -259,12 +272,19 @@ public class MidFaceEraseMask : MonoBehaviour
             FacePresence = 0f;
             if (paired) _videoVisibility = 0f;
         }
-        UpdateStages();
         if (valid && _maskReady)
         {
             if (!EnsureTextures()) return;
             RenderSkin(source, dt);
         }
+        // Start with an untouched first face frame. Count only intervals with
+        // a usable face, using real elapsed time rather than the filter's
+        // capped dt (which would stretch a 2 s entry on a slow computer).
+        bool entryFrameReady = valid && _maskReady && _historyReady;
+        if (entryFrameReady && _entryFrameReady)
+            PresentationSeconds += Time.unscaledDeltaTime;
+        _entryFrameReady = entryFrameReady;
+        UpdateStages();
         // Paired preview starts black and stays protected while its first
         // surface/skin frame is prepared. Unpaired preview keeps the old rule.
         if (!_boundImage && (_historyReady || paired))
@@ -330,19 +350,13 @@ public class MidFaceEraseMask : MonoBehaviour
 
     void UpdateStages()
     {
-        if (!playEntryAnimation) { for (int i = 0; i < _stages.Length; i++) _stages[i] = 1f; GrowthProgress = 0; return; }
-        float t = PresentationSeconds;
-        _stages[0] = _stages[1] = Ramp(t, 3, 6);
-        _stages[2] = Ramp(t, 5, 8);
-        _stages[3] = Ramp(t, 6, 9);
-        _stages[4] = Ramp(t, 8, 11);
-        _stages[5] = Ramp(t, 9, 12);
-        _stages[6] = Ramp(t, 12, 15);
-        _stages[7] = _stages[8] = Ramp(t, 6, 9); // nose-side folds
-        _stages[9] = _stages[10] = Ramp(t, 9, 12); // below mouth corners
-        _stages[11] = _stages[12] = Ramp(t, 6, 9); // inner upper-cheek reflections
-        _stages[13] = _stages[14] = Ramp(t, 12, 15); // inner chin transitions
-        if (IsTracking) GrowthProgress = Ramp(t, 15, 24);
+        // Union the complete final mask first, including its interior fill;
+        // apply ONE entry weight in ApplyComposite. Fading individual regions
+        // would darken overlaps faster and leave the interior seams behind.
+        for (int i = 0; i < _stages.Length; i++) _stages[i] = 1f;
+        if (!playEntryAnimation) GrowthProgress = 0f;
+        else if (IsTracking)
+            GrowthProgress = Ramp(PresentationSeconds, EntryDuration, EntryDuration + 9f);
     }
     static float Ramp(float t, float a, float b) => Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(a, b, t));
 
@@ -444,7 +458,7 @@ public class MidFaceEraseMask : MonoBehaviour
     void ApplyComposite(Material m)
     {
         m.SetFloat("_VideoVisibility", _videoVisibility);
-        m.SetFloat("_Amount", _maskReady && _history != null ? FacePresence*effectAmount : 0f);
+        m.SetFloat("_Amount", _maskReady && _history != null ? FacePresence*effectAmount*EntryProgress : 0f);
         if (!_maskReady || _history == null) return;
         _regions.SetMaterial(m);
         m.SetVector("_CameraSize",new Vector4(_cameraWidth,_cameraHeight,1f/_cameraWidth,1f/_cameraHeight));
@@ -474,10 +488,16 @@ public class MidFaceEraseMask : MonoBehaviour
         return true;
     }
 
+    void ResetEntryClock()
+    {
+        PresentationSeconds = GrowthProgress = 0f;
+        _entryFrameReady = false;
+    }
+
     [ContextMenu("Replay entry / 重播入场")]
-    public void ReplayEntry() { playEntryAnimation=true; PresentationSeconds=GrowthProgress=0; }
+    public void ReplayEntry() { _replayRequested = true; }
     [ContextMenu("Show final skin / 显示最终皮肤")]
-    public void ShowFinalSkin() { playEntryAnimation=false; effectAmount=1f; GrowthProgress=0; }
+    public void ShowFinalSkin() { _replayRequested=false; playEntryAnimation=false; effectAmount=1f; GrowthProgress=0; }
 
     void OnGUI()
     {
@@ -486,13 +506,14 @@ public class MidFaceEraseMask : MonoBehaviour
         if (Event.current.type==EventType.KeyDown && Event.current.keyCode==KeyCode.R)
         { ReplayEntry(); Event.current.Use(); }
         if (!showControls) return;
-        _controlRect=new Rect(UnityEngine.Screen.width-244,12,232,244);
+        _controlRect=new Rect(UnityEngine.Screen.width-244,12,232,268);
         GUI.Window(GetInstanceID(),_controlRect,DrawControls,"Faceless / Skin");
     }
     void DrawControls(int id)
     {
         GUILayout.Label(IsTracking ? "Tracking / "+Mathf.RoundToInt(FacePresence*100)+"%" : "Waiting for face");
         if (_runner != null && _runner.PreviewIsSynchronized) GUILayout.Label("Paired camera + landmarks");
+        GUILayout.Label(playEntryAnimation ? "Entry / "+Mathf.RoundToInt(EntryProgress*100)+"% ("+EntryDuration.ToString("0.0")+" s)" : "Final skin");
         GUILayout.Label("Erase / "+effectAmount.ToString("0.00"));
         effectAmount=GUILayout.HorizontalSlider(effectAmount,0,1);
         showLandmarks=GUILayout.Toggle(showLandmarks,"468 landmarks");

@@ -1124,8 +1124,9 @@ MonoBehaviour:
   reconstructionResolution: 256
   colorSmoothingSeconds: 0.065
   landmarkCutoff: 4
-  playEntryAnimation: 0
-  resetAfterAbsence: 1.2
+  playEntryAnimation: 1
+  entryDurationSeconds: 2
+  resetAfterAbsence: 3
   lostFaceFadeSeconds: 0.18
   showLandmarks: 0
   showMask: 0
