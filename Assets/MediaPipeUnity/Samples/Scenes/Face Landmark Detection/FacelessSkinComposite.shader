@@ -6,6 +6,7 @@ Shader "Faceless/SkinComposite"
         _SkinTex ("Reconstructed skin", 2D) = "black" {}
         _SurfaceTex ("Projected face surface", 2D) = "black" {}
         _VideoVisibility ("Video visibility", Float) = 1
+        _OverlayOnly ("Per-face overlay", Float) = 0
         _Color ("Tint", Color) = (1,1,1,1)
         _StencilComp ("Stencil comparison", Float) = 8
         _Stencil ("Stencil ID", Float) = 0
@@ -35,7 +36,7 @@ Shader "Faceless/SkinComposite"
             #include "FacelessSkinCommon.cginc"
             sampler2D _MainTex, _SkinTex, _SurfaceTex;
             float4 _Color, _ClipRect, _FaceBounds;
-            float _Amount, _Volume, _Grain, _ShowMask, _VideoVisibility;
+            float _Amount, _Volume, _Grain, _ShowMask, _VideoVisibility, _OverlayOnly;
             float _Stages[FACELESS_REGION_COUNT];
             struct appdata { float4 vertex:POSITION; float2 uv:TEXCOORD0; float4 color:COLOR; };
             struct v2f { float4 vertex:SV_POSITION; float2 uv:TEXCOORD0; float4 color:COLOR; float4 local:TEXCOORD1; };
@@ -51,22 +52,22 @@ Shader "Faceless/SkinComposite"
                 float2 atlas = PixelToAtlas(p);
                 float amount = 0;
                 float4 outputColor = original;
+                float2 edgeTap = _CameraSize.zw * 0.35;
+                float surfaceCoverage = (tex2D(_SurfaceTex, i.uv + edgeTap).r
+                    + tex2D(_SurfaceTex, i.uv - edgeTap).r
+                    + tex2D(_SurfaceTex, i.uv + float2(edgeTap.x, -edgeTap.y)).r
+                    + tex2D(_SurfaceTex, i.uv + float2(-edgeTap.x, edgeTap.y)).r) * 0.25;
                 if (_Amount > 0 && all(atlas >= 0) && all(atlas <= 1))
                 {
                     float uncovered = 1.0;
                     [unroll] for (int n=0;n<FACELESS_REGION_COUNT;n++) uncovered *= 1.0-RegionAlpha(p,n)*_Stages[n];
                     // Complete only closed interior seams. Existing analytic
                     // regions still define every outside edge and its feather.
-                    // During entry this finishes with the chin at 12-15 s.
+                    // Entry fades this complete union once via _Amount.
                     float localCoverage = max(1.0-uncovered, InteriorCoverage(p)*_Stages[6]);
                     // The face oval is an anatomical ring, not the visible
                     // silhouette on a turn. Use the actual projected triangle
                     // surface here; keep the oval inset ONLY for donor seeds.
-                    float2 edgeTap = _CameraSize.zw * 0.35;
-                    float surfaceCoverage = (tex2D(_SurfaceTex, i.uv + edgeTap).r
-                        + tex2D(_SurfaceTex, i.uv - edgeTap).r
-                        + tex2D(_SurfaceTex, i.uv + float2(edgeTap.x, -edgeTap.y)).r
-                        + tex2D(_SurfaceTex, i.uv + float2(-edgeTap.x, edgeTap.y)).r) * 0.25;
                     amount = localCoverage * surfaceCoverage * _Amount;
                     if (amount > 0.00001)
                     {
@@ -98,6 +99,13 @@ Shader "Faceless/SkinComposite"
                         outputColor.rgb=lerp(outputColor.rgb,float3(0.2,0.5,1),boxLine);
                     }
                 }
+                // Each person is a cropped layer over the SAME raw video.
+                // Restore that person's original unmodified skin outside the
+                // local masks, so a farther person's effect cannot paint it.
+                // Coverage is already antialiased inside amount; do not apply
+                // surfaceCoverage a second time to the effect's soft edge.
+                if (_OverlayOnly > 0.5)
+                    outputColor.a *= _ShowMask > 0.5 ? 1.0 : step(0.000001, surfaceCoverage);
                 outputColor.rgb *= _VideoVisibility;
                 outputColor *= i.color;
                 #ifdef UNITY_UI_CLIP_RECT

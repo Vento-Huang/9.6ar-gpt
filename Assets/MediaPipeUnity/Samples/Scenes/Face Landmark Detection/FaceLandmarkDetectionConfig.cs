@@ -21,7 +21,13 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
 
     public Tasks.Vision.Core.RunningMode RunningMode { get; set; } = Tasks.Vision.Core.RunningMode.LIVE_STREAM;
 
-    public int NumFaces { get; set; } = 1;
+    public const int MaximumFaces = 6;
+    private int _numFaces = MaximumFaces;
+    public int NumFaces
+    {
+      get => _numFaces;
+      set => _numFaces = System.Math.Max(1, System.Math.Min(MaximumFaces, value));
+    }
     public float MinFaceDetectionConfidence { get; set; } = 0.5f;
     public float MinFacePresenceConfidence { get; set; } = 0.5f;
     public float MinTrackingConfidence { get; set; } = 0.5f;

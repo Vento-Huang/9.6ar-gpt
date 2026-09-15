@@ -251,8 +251,13 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
         return;
       }
 
-      PreviewHasFace = succeeded && result.faceLandmarks != null && result.faceLandmarks.Count > 0
-        && result.faceLandmarks[0].landmarks != null && result.faceLandmarks[0].landmarks.Count >= 468;
+      PreviewHasFace = false;
+      if (succeeded && result.faceLandmarks != null)
+      {
+        for (int i = 0; i < Mathf.Min(config.NumFaces, result.faceLandmarks.Count); i++)
+          if (result.faceLandmarks[i].landmarks != null && result.faceLandmarks[i].landmarks.Count >= 468)
+          { PreviewHasFace = true; break; }
+      }
       if (!PreviewHasFace)
       {
         // Keep the last matching pixels AND geometry. The effect controller

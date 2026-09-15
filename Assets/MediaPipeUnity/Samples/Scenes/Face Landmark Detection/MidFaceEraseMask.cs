@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Mediapipe.Unity;
 using Mediapipe.Unity.Sample.FaceLandmarkDetection;
 using UnityEngine;
@@ -49,80 +50,74 @@ public class MidFaceEraseMask : MonoBehaviour
     public bool showMask = false;
     public bool showControls = true;
 
-    public bool IsTracking { get; private set; }
-    public float FacePresence { get; private set; }
-    public float PresentationSeconds { get; private set; }
-    public float EntryProgress => playEntryAnimation ? Ramp(PresentationSeconds, 0f, EntryDuration) : 1f;
-    public float GrowthProgress { get; private set; }
-    public bool GrowthReady => IsTracking && playEntryAnimation && PresentationSeconds >= EntryDuration;
-    float EntryDuration => Mathf.Max(0.1f, entryDurationSeconds);
-    public Matrix4x4 HeadPose => _controller != null ? _controller.FacePose : Matrix4x4.identity;
+    public const int MaximumFaces = 6;
+    public int ActiveFaceCount { get; private set; }
+    public bool IsTracking => ActiveFaceCount > 0;
+    public float FacePresence => IsTracking ? 1f : 0f;
+    public float PresentationSeconds => Primary != null ? Primary.PresentationSeconds : 0f;
+    public float EntryProgress => Primary != null ? Primary.EntryProgress : 0f;
+    public float GrowthProgress => Primary != null ? Primary.GrowthProgress : 0f;
+    public bool GrowthReady => Primary != null && IsTracking && playEntryAnimation
+        && Primary.PresentationSeconds >= Mathf.Max(0.1f, entryDurationSeconds);
+    public Matrix4x4 HeadPose => Primary != null ? Primary.HeadPose : Matrix4x4.identity;
     public event Action<MidFaceEraseMask> FrameUpdated;
 
-    readonly FacelessRegions _regions = new FacelessRegions();
-    readonly FacelessSurface _surface = new FacelessSurface();
-    readonly FacelessInterior _interior = new FacelessInterior();
-    readonly Vector2[] _points = new Vector2[468];
-    readonly Vector2[] _lastRaw = new Vector2[468];
-    readonly Vector2[] _velocity = new Vector2[468];
-    readonly Transform[] _landmarkTransforms = new Transform[468];
-    readonly float[] _stages = new float[FacelessRegions.Count];
+    // Slots are internal storage; TrackId identifies a temporary geometric
+    // track across changing detection-array order, not a person's identity.
+    readonly FacelessTrackAssigner _assigner = new FacelessTrackAssigner();
+    readonly FacelessFaceRenderer[] _faces = new FacelessFaceRenderer[MaximumFaces];
+    readonly RawImage[] _layers = new RawImage[MaximumFaces];
+    readonly Vector2[][] _detections = new Vector2[MaximumFaces][];
+    readonly Rect[] _bounds = new Rect[MaximumFaces];
+    readonly Matrix4x4[] _poses = new Matrix4x4[MaximumFaces];
+    readonly bool[] _hasPoses = new bool[MaximumFaces];
+    readonly int[] _drawOrder = new int[MaximumFaces];
+    readonly List<Renderer> _visuals = new List<Renderer>();
+    readonly Dictionary<Renderer, bool> _originalVisibility = new Dictionary<Renderer, bool>();
+    readonly Dictionary<Renderer, bool> _pointVisuals = new Dictionary<Renderer, bool>();
     FaceLandmarkerResultAnnotationController _controller;
     FaceLandmarkerRunner _runner;
-    Renderer[] _annotationRenderers;
-    bool[] _originalVisibility;
-    Material _reconstruction, _composite, _originalMaterial;
-    RenderTexture[] _known, _temp, _filled, _history;
-    RenderTexture _donorTexture, _guideTexture;
-    int _historyIndex, _version = -1, _size, _cameraWidth, _cameraHeight;
-    bool _historyReady, _pointsReady, _boundImage, _maskReady, _entryFrameReady, _replayRequested;
-    float _nextFind, _lastLandmarkTime, _lastSeen = -100f;
-    float _nextShaderCheck;
-    float _videoVisibility = 1f;
-    Rect _controlRect;
+    Material _baseMaterial, _originalMaterial;
+    bool _boundImage, _wasPaired, _waitingForCamera, _replayAllRequested;
+    int _version = -1, _cameraWidth, _cameraHeight;
+    float _nextFind, _nextShaderCheck, _lastSeen = -100f, _lastPair = -100f;
+    float _videoVisibility = 1f, _captureFps;
+    FacelessFaceRenderer Primary
+    {
+        get
+        {
+            for (int i = 0; i < MaximumFaces; i++)
+                if (_faces[i] != null && _faces[i].IsTracking && _faces[i].Ready) return _faces[i];
+            return null;
+        }
+    }
 
     void OnEnable()
     {
-        // A previous scene revision serialized these components. They must not
-        // render a second copy of the effect after upgrading this script.
         var legacyRenderer = GetComponent<MeshRenderer>();
         if (legacyRenderer != null) legacyRenderer.enabled = false;
-        _nextFind = 0;
-        _nextShaderCheck = 0;
-        _version = -1;
-        Array.Clear(_landmarkTransforms, 0, _landmarkTransforms.Length);
-        _pointsReady = _historyReady = _maskReady = false;
-        _lastSeen = -100f;
-        IsTracking = false;
-        _replayRequested = false;
-        FacePresence = 0;
-        ResetEntryClock();
+        _nextFind = _nextShaderCheck = 0f;
+        _lastSeen = _lastPair = -100f;
+        _version = -1; _videoVisibility = 1f; _captureFps = 0f;
+        _waitingForCamera = _replayAllRequested = false; ActiveFaceCount = 0;
+        _assigner.Reset();
+        for (int i = 0; i < MaximumFaces; i++) _detections[i] = new Vector2[468];
         if (reconstructionShader == null) reconstructionShader = Shader.Find("Hidden/Faceless/SkinReconstruction");
         if (compositeShader == null) compositeShader = Shader.Find("Faceless/SkinComposite");
         if (surfaceShader == null) surfaceShader = Shader.Find("Hidden/Faceless/SurfaceGuard");
-        if (!CheckShader(reconstructionShader) || !CheckShader(compositeShader) || !CheckShader(surfaceShader))
-        {
-            enabled = false;
-            return;
-        }
-        _reconstruction = new Material(reconstructionShader) { hideFlags = HideFlags.HideAndDontSave };
-        _composite = new Material(compositeShader) { hideFlags = HideFlags.HideAndDontSave };
-        _composite.SetFloat("_Amount", 0);
-        _videoVisibility = 1f;
-        _composite.SetFloat("_VideoVisibility", _videoVisibility);
-        _composite.SetVector("_FrameU", new Vector4(1, 0, 0, 0));
-        _composite.SetVector("_FrameV", new Vector4(0, 1, 0, 0));
+        if (!CheckShaders()) { enabled = false; return; }
+        _baseMaterial = new Material(compositeShader) { hideFlags = HideFlags.HideAndDontSave };
+        _baseMaterial.SetFloat("_Amount", 0f);
+        _baseMaterial.SetFloat("_OverlayOnly", 0f);
+        _baseMaterial.SetVector("_FrameU", new Vector4(1, 0, 0, 0));
+        _baseMaterial.SetVector("_FrameV", new Vector4(0, 1, 0, 0));
+        _baseMaterial.SetTexture("_SurfaceTex", Texture2D.blackTexture);
     }
 
     bool CheckShader(Shader shader)
     {
-        if (shader == null)
-        {
-            Debug.LogError("Faceless: missing skin shader reference. The original camera material is retained.", this);
-            return false;
-        }
+        if (shader == null) { Debug.LogError("Faceless: missing skin shader reference.", this); return false; }
 #if UNITY_EDITOR
-        // isSupported alone does not reliably expose failed editor variants.
         if (UnityEditor.ShaderUtil.ShaderHasError(shader))
         {
             foreach (var message in UnityEditor.ShaderUtil.GetShaderMessages(shader))
@@ -131,426 +126,333 @@ public class MidFaceEraseMask : MonoBehaviour
         }
 #endif
         if (!shader.isSupported)
-        {
-            Debug.LogError($"Faceless: {shader.name} is unsupported on {SystemInfo.graphicsDeviceType}.", this);
-            return false;
-        }
+        { Debug.LogError($"Faceless: {shader.name} is unsupported on {SystemInfo.graphicsDeviceType}.", this); return false; }
         return true;
     }
+    bool CheckShaders() => CheckShader(reconstructionShader) && CheckShader(compositeShader) && CheckShader(surfaceShader);
 
     void FindReferences()
     {
         if (Time.unscaledTime < _nextFind) return;
         _nextFind = Time.unscaledTime + 0.5f;
         if (_runner == null) _runner = FindFirstObjectByType<FaceLandmarkerRunner>();
+        if (_controller == null) _controller = FindFirstObjectByType<FaceLandmarkerResultAnnotationController>();
         if (screenImage == null)
         {
             foreach (var img in FindObjectsByType<RawImage>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
+                // Generated overlays have a Faceless name and must never be
+                // mistaken for the source when the sample recreates its UI.
+                if (img.gameObject.name.StartsWith("Faceless track ")) continue;
                 if (img.GetComponent<Mediapipe.Unity.Screen>() != null ||
                     img.GetComponentInParent<Mediapipe.Unity.Screen>() != null)
                 { screenImage = img; break; }
             }
         }
-        if (pointListAnnotation == null)
-        {
-            foreach (var face in FindObjectsByType<FaceLandmarkListAnnotation>(FindObjectsInactive.Include, FindObjectsSortMode.None))
-            {
-                var points = face.GetComponentInChildren<PointListAnnotation>(true);
-                if (points == null || points.transform.childCount < 468) continue;
-                pointListAnnotation = points.transform;
-                _controller = face.GetComponentInParent<FaceLandmarkerResultAnnotationController>();
-                for (int i = 0; i < 468; i++) _landmarkTransforms[i] = pointListAnnotation.GetChild(i);
-                CacheVisuals();
-                break;
-            }
-        }
-        else if (_landmarkTransforms[0] == null && pointListAnnotation.childCount >= 468)
-        {
-            _controller = pointListAnnotation.GetComponentInParent<FaceLandmarkerResultAnnotationController>();
-            for (int i = 0; i < 468; i++) _landmarkTransforms[i] = pointListAnnotation.GetChild(i);
-            CacheVisuals();
-        }
-        if (_controller == null)
-            _controller = FindFirstObjectByType<FaceLandmarkerResultAnnotationController>();
-    }
-
-    void CacheVisuals()
-    {
-        RestoreVisuals();
-        Transform root = pointListAnnotation.parent;
-        if (root.parent != null && root.parent.name.Contains("FaceLandmarkListWithIris")) root = root.parent;
-        _annotationRenderers = root.GetComponentsInChildren<Renderer>(true);
-        _originalVisibility = new bool[_annotationRenderers.Length];
-        for (int i = 0; i < _annotationRenderers.Length; i++)
-            _originalVisibility[i] = _annotationRenderers[i].forceRenderingOff;
     }
 
     void LateUpdate()
     {
-        if (_reconstruction == null || _composite == null) return;
+        if (_baseMaterial == null) return;
+        FindReferences();
         if (Time.unscaledTime >= _nextShaderCheck)
         {
-            _nextShaderCheck = Time.unscaledTime + 0.5f;
-            if (!CheckShader(reconstructionShader) || !CheckShader(compositeShader) || !CheckShader(surfaceShader))
-            {
-                enabled = false; // OnDisable restores the original camera material.
-                return;
-            }
+            _nextShaderCheck = Time.unscaledTime + 1f;
+            if (!CheckShaders()) { enabled = false; return; }
         }
-        FindReferences();
         if (screenImage == null || screenImage.texture == null) return;
-        Texture source = screenImage.texture;
+        Texture source = screenImage.texture; // NEVER an already composited layer.
         if (source.width < 32 || source.height < 32) return;
-        if (_cameraWidth != source.width || _cameraHeight != source.height)
-        {
-            _cameraWidth = source.width; _cameraHeight = source.height;
-            _pointsReady = _historyReady = _maskReady = false;
-        }
-        float now = Time.unscaledTime;
-        float dt = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
         bool paired = _runner != null && _runner.PreviewIsSynchronized;
-        if (paired && _runner.LastMatchedFrameTime < 0f)
+        bool waiting = paired && _runner.LastMatchedFrameTime < 0f;
+        if (_cameraWidth != source.width || _cameraHeight != source.height || paired != _wasPaired
+            || (waiting && !_waitingForCamera))
         {
-            // Camera restart: never paint a previous visitor's cached skin
-            // over the new session's initial black capture buffer.
-            _pointsReady = _historyReady = _maskReady = false;
-            FacePresence = _videoVisibility = 0f;
-            _lastSeen = -100f;
-            ResetEntryClock();
+            ResetTracks();
+            _cameraWidth = source.width; _cameraHeight = source.height;
+            _wasPaired = paired;
         }
-        bool valid = _controller != null && _controller.HasFace
-            && now - _controller.LastResultTime < 0.5f
-            && (!paired || _runner.PreviewHasFace)
-            && pointListAnnotation != null && pointListAnnotation.gameObject.activeInHierarchy
-            && _landmarkTransforms[0] != null;
-        IsTracking = valid;
-        if (valid)
-        {
-            bool reacquired = now - _lastSeen > 0.5f;
-            if (_replayRequested)
-            {
-                playEntryAnimation = true;
-                ResetEntryClock();
-                _replayRequested = false;
-            }
-            // Reset only on reacquisition, never while displaying the held
-            // lost-face frame. Brief turns keep the current erasure intact.
-            if (now - _lastSeen > Mathf.Max(0.5f, resetAfterAbsence))
-                ResetEntryClock();
-            if (reacquired) _pointsReady = _historyReady = false;
-            _lastSeen = now;
-            if (_version != _controller.ResultVersion || !_pointsReady)
-            {
-                UpdateLandmarks();
-                _version = _controller.ResultVersion;
-                _maskReady = _regions.Build(_points, maskScale, featherFraction)
-                    && _surface.Render(_lastRaw, _cameraWidth, _cameraHeight, surfaceShader);
-            }
-            else if (_pointsReady) _maskReady = _surface.Texture != null
-                && _regions.Build(_points, maskScale, featherFraction);
-            FacePresence = paired ? 1f : Mathf.MoveTowards(FacePresence, 1f, dt / 0.18f);
-            _videoVisibility = Mathf.MoveTowards(_videoVisibility, 1f, dt / 0.18f);
-        }
-        else
-        {
-            if (paired && _historyReady)
-            {
-                // The runner holds the last paired frame. Keep its erasure
-                // intact; fade the entire held image to black on tracking loss
-                // instead of exposing the original features through the mask.
-                if (now - _lastSeen > 0.18f)
-                    _videoVisibility = Mathf.MoveTowards(_videoVisibility, 0f, dt / 0.25f);
-            }
-            else
-                FacePresence = Mathf.MoveTowards(FacePresence, 0f, dt / Mathf.Max(0.08f, lostFaceFadeSeconds));
-            GrowthProgress = Mathf.MoveTowards(GrowthProgress, 0f, dt / 0.8f);
-            if (FacePresence == 0f) _historyReady = false;
-        }
-        if (!_maskReady)
-        {
-            FacePresence = 0f;
-            if (paired) _videoVisibility = 0f;
-        }
-        if (valid && _maskReady)
-        {
-            if (!EnsureTextures()) return;
-            RenderSkin(source, dt);
-        }
-        // Start with an untouched first face frame. Count only intervals with
-        // a usable face, using real elapsed time rather than the filter's
-        // capped dt (which would stretch a 2 s entry on a slow computer).
-        bool entryFrameReady = valid && _maskReady && _historyReady;
-        if (entryFrameReady && _entryFrameReady)
-            PresentationSeconds += Time.unscaledDeltaTime;
-        _entryFrameReady = entryFrameReady;
-        UpdateStages();
-        // Paired preview starts black and stays protected while its first
-        // surface/skin frame is prepared. Unpaired preview keeps the old rule.
-        if (!_boundImage && (_historyReady || paired))
+        _waitingForCamera = waiting;
+        if (!_boundImage)
         {
             _originalMaterial = screenImage.material;
-            screenImage.material = _composite;
+            screenImage.material = _baseMaterial;
             _boundImage = true;
         }
-        ApplyComposite(_composite);
-        // UI masking may return a cached stencil-material instance.
-        Material drawing = screenImage.materialForRendering;
-        if (_boundImage && drawing != _composite && drawing != null) ApplyComposite(drawing);
-        if (_annotationRenderers != null)
+        float now = Time.unscaledTime, dt = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+        bool hasPair = !waiting && _controller != null && _controller.HasFace
+            && (paired ? _runner.PreviewHasFace : now - _controller.LastResultTime < 0.5f);
+        if (hasPair && _controller.ResultVersion != _version)
         {
-            for (int i = 0; i < _annotationRenderers.Length; i++)
+            float interval = _lastPair < 0f ? 0f : Mathf.Max(0f, now - _lastPair);
+            if (interval > 0.001f)
+                _captureFps = _captureFps <= 0f ? 1f / interval : Mathf.Lerp(_captureFps, 1f / interval, 0.2f);
+            _lastPair = now;
+            ProcessFaces(source, now, interval, paired);
+            // No usable skin output for this newly published face frame:
+            // hide immediately instead of fading in unprocessed features.
+            if (paired && ActiveFaceCount == 0) _videoVisibility = 0f;
+            _version = _controller.ResultVersion;
+            RefreshVisuals();
+        }
+        else if (!hasPair)
+        {
+            ActiveFaceCount = 0;
+            _assigner.Update(_bounds, 0, now, Mathf.Max(0.5f, resetAfterAbsence));
+            for (int i = 0; i < MaximumFaces; i++)
             {
-                var r = _annotationRenderers[i];
-                if (r != null)
-                    r.forceRenderingOff = !showLandmarks || !r.transform.IsChildOf(pointListAnnotation);
+                if (_faces[i] != null) _faces[i].MarkMissing();
+                // Only paired preview owns/fixes the old pixels. Never draw a
+                // stale face over a live unpaired camera texture.
+                if (!paired && _layers[i] != null) _layers[i].enabled = false;
             }
         }
+        // A person's departure never darkens everyone else. The previous
+        // all-faces-lost hold/fade applies only when the whole detector is empty.
+        if (waiting) _videoVisibility = 0f;
+        else if (hasPair && ActiveFaceCount > 0)
+        {
+            _lastSeen = now;
+            _videoVisibility = Mathf.MoveTowards(_videoVisibility, 1f, dt / 0.18f);
+        }
+        else if (paired && now - _lastSeen > 0.18f)
+            _videoVisibility = Mathf.MoveTowards(_videoVisibility, 0f, dt / 0.25f);
+        else if (!paired) _videoVisibility = 1f;
+
+        ApplyBase(_baseMaterial);
+        var baseDrawing = screenImage.materialForRendering;
+        if (baseDrawing != null && baseDrawing != _baseMaterial) ApplyBase(baseDrawing);
+        for (int i = 0; i < MaximumFaces; i++)
+        {
+            if (_faces[i] == null || _layers[i] == null) continue;
+            var layer = _layers[i];
+            if (layer.enabled)
+            {
+                layer.texture = source;
+                layer.color = screenImage.color;
+                FitLayer(layer, _faces[i].Regions.Bounds);
+                _faces[i].ApplyComposite(_faces[i].Composite, _videoVisibility);
+                var drawing = layer.materialForRendering;
+                if (drawing != null && drawing != _faces[i].Composite)
+                    _faces[i].ApplyComposite(drawing, _videoVisibility);
+            }
+            if (!_assigner.SlotIsActive[i] && !layer.enabled)
+            { _faces[i].Dispose(); _faces[i] = null; Destroy(layer.gameObject); _layers[i] = null; }
+        }
+        foreach (var item in _pointVisuals)
+            if (item.Key != null) item.Key.forceRenderingOff = !showLandmarks || !item.Value;
         FrameUpdated?.Invoke(this);
     }
 
-    Vector2 LandmarkPixel(Transform t)
+    void ProcessFaces(Texture source, float now, float elapsed, bool paired)
     {
-        // Project through the SAME Canvas camera and RawImage rect/uvRect as
-        // the source. Handles mirrored feeds, fit/resize, and rotated display.
         Canvas canvas = screenImage.canvas;
         Camera camera = canvas != null && canvas.renderMode != RenderMode.ScreenSpaceOverlay ? canvas.worldCamera : null;
-        Vector2 screenPoint = RectTransformUtility.WorldToScreenPoint(camera, t.position);
-        RectTransformUtility.ScreenPointToLocalPointInRectangle(screenImage.rectTransform, screenPoint, camera, out Vector2 local);
         Rect rect = screenImage.rectTransform.rect, uv = screenImage.uvRect;
-        return new Vector2((uv.x + (local.x - rect.xMin) / rect.width * uv.width) * _cameraWidth,
-            (uv.y + (local.y - rect.yMin) / rect.height * uv.height) * _cameraHeight);
-    }
-
-    void UpdateLandmarks()
-    {
-        float time = _controller.LastResultTime;
-        float dt = Mathf.Clamp(time - _lastLandmarkTime, 0.008f, 0.2f);
-        _lastLandmarkTime = time;
-        Vector2 nose = LandmarkPixel(_landmarkTransforms[1]);
-        if (_pointsReady && Vector2.Distance(nose, _points[1]) > Mathf.Max(_regions.Width * 0.4f, 30f))
-            _pointsReady = _historyReady = false;
-        for (int i = 0; i < 468; i++)
+        int count = 0;
+        for (int detection = 0; detection < _controller.FaceCount && count < MaximumFaces; detection++)
         {
-            Vector2 raw = LandmarkPixel(_landmarkTransforms[i]);
-            if (!_pointsReady) { _points[i] = _lastRaw[i] = raw; _velocity[i] = Vector2.zero; continue; }
-            Vector2 speed = (raw - _lastRaw[i]) / dt;
-            _velocity[i] = Vector2.Lerp(_velocity[i], speed, 1f - Mathf.Exp(-dt * 12f));
-            float cutoff = landmarkCutoff + 14f * _velocity[i].magnitude / Mathf.Max(_regions.Width, 40f);
-            float alpha = 1f / (1f + 1f / (2f * Mathf.PI * cutoff * dt));
-            _points[i] = Vector2.Lerp(_points[i], raw, alpha);
-            // Keep temporal smoothing subpixel in paired mode. A slow mask
-            // over a newer image reveals features even with accurate tracking.
-            if (_runner != null && _runner.PreviewIsSynchronized)
-                _points[i] = raw + Vector2.ClampMagnitude(_points[i] - raw, 0.35f);
-            _lastRaw[i] = raw;
-        }
-        _pointsReady = true;
-    }
-
-    void UpdateStages()
-    {
-        // Union the complete final mask first, including its interior fill;
-        // apply ONE entry weight in ApplyComposite. Fading individual regions
-        // would darken overlaps faster and leave the interior seams behind.
-        for (int i = 0; i < _stages.Length; i++) _stages[i] = 1f;
-        if (!playEntryAnimation) GrowthProgress = 0f;
-        else if (IsTracking)
-            GrowthProgress = Ramp(PresentationSeconds, EntryDuration, EntryDuration + 9f);
-    }
-    static float Ramp(float t, float a, float b) => Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(a, b, t));
-
-    bool EnsureTextures()
-    {
-        int size = Mathf.ClosestPowerOfTwo(Mathf.Clamp(reconstructionResolution, 128, 512));
-        if (_known != null && size == _size) return true;
-        ReleaseTextures();
-        RenderTextureFormat format = RenderTextureFormat.ARGBHalf;
-        if (!SystemInfo.SupportsRenderTextureFormat(format)) format = RenderTextureFormat.ARGBFloat;
-        if (!SystemInfo.SupportsRenderTextureFormat(format))
-        {
-            Debug.LogError("Faceless: this GPU cannot render floating-point skin buffers.", this);
-            enabled = false; return false;
-        }
-        _size = size;
-        int levels = 1;
-        for (int s = size; s > 4; s >>= 1) levels++;
-        _known = new RenderTexture[levels]; _temp = new RenderTexture[levels]; _filled = new RenderTexture[levels];
-        for (int i = 0, s = size; i < levels; i++, s >>= 1)
-        {
-            _known[i] = NewTexture(s,s,format,"Trusted skin");
-            _temp[i] = NewTexture(s,s,format,"Skin filter");
-            _filled[i] = NewTexture(s,s,format,"Skin reconstruction");
-        }
-        _history = new[] {NewTexture(size,size,format,"Skin history A"),NewTexture(size,size,format,"Skin history B")};
-        _donorTexture = NewTexture(6,1,format,"Cheek samples");
-        _guideTexture = NewTexture(size,size,format,"Local skin illumination");
-        _historyReady = false;
-        return true;
-    }
-    static RenderTexture NewTexture(int w, int h, RenderTextureFormat format, string label)
-    {
-        var rt = new RenderTexture(w,h,0,format,RenderTextureReadWrite.Linear)
-        {
-            name=label, filterMode=FilterMode.Bilinear, wrapMode=TextureWrapMode.Clamp,
-            useMipMap=false, autoGenerateMips=false, antiAliasing=1, hideFlags=HideFlags.HideAndDontSave
-        };
-        rt.Create(); return rt;
-    }
-
-    void RenderSkin(Texture source, float dt)
-    {
-        // CPU geometry only, cached for unchanged landmarks; no video readback.
-        // Use this same frame's interior mask for sampling and composition.
-        _interior.Build(_regions);
-        _regions.SetMaterial(_reconstruction);
-        _reconstruction.SetTexture("_InteriorTex", _interior.Texture);
-        _reconstruction.SetFloat("_LocalColorStrength", localColorStrength);
-        _reconstruction.SetFloat("_HighlightSuppression", highlightSuppression);
-        _reconstruction.SetVector("_CameraSize", new Vector4(_cameraWidth,_cameraHeight,1f/_cameraWidth,1f/_cameraHeight));
-        RenderTexture previous = RenderTexture.active;
-        bool srgb = GL.sRGBWrite;
-        try
-        {
-            GL.sRGBWrite = false; // RGBAHalf moments are numerical linear buffers.
-            Graphics.Blit(source,_donorTexture,_reconstruction,0);
-            _reconstruction.SetTexture("_DonorTex",_donorTexture);
-            Graphics.Blit(source,_guideTexture,_reconstruction,7);
-            _reconstruction.SetTexture("_GuideTex",_guideTexture);
-            Graphics.Blit(source,_known[0],_reconstruction,1);
-            for (int i=0;i<_known.Length-1;i++)
+            if (!_controller.TryGetFace(detection, out var points, out var pose, out bool hasPose)) continue;
+            Vector2 min = new Vector2(float.MaxValue, float.MaxValue), max = new Vector2(float.MinValue, float.MinValue);
+            bool finite = true;
+            for (int landmark = 0; landmark < 468; landmark++)
             {
-                _reconstruction.SetVector("_Direction",new Vector4(1,0,0,0));
-                Graphics.Blit(_known[i],_temp[i],_reconstruction,2);
-                _reconstruction.SetVector("_Direction",new Vector4(0,1,0,0));
-                Graphics.Blit(_temp[i],_known[i+1],_reconstruction,2);
+                Vector2 projected = RectTransformUtility.WorldToScreenPoint(camera, points[landmark].transform.position);
+                RectTransformUtility.ScreenPointToLocalPointInRectangle(screenImage.rectTransform, projected, camera, out Vector2 local);
+                Vector2 pixel = new Vector2((uv.x + (local.x - rect.xMin) / rect.width * uv.width) * _cameraWidth,
+                    (uv.y + (local.y - rect.yMin) / rect.height * uv.height) * _cameraHeight);
+                if (float.IsNaN(pixel.x) || float.IsInfinity(pixel.x) || float.IsNaN(pixel.y) || float.IsInfinity(pixel.y))
+                { finite = false; break; }
+                _detections[count][landmark] = pixel;
+                min = Vector2.Min(min, pixel); max = Vector2.Max(max, pixel);
             }
-            int last=_known.Length-1;
-            Graphics.Blit(_known[last],_filled[last],_reconstruction,3);
-            for (int i=last-1;i>=0;i--)
-            {
-                _reconstruction.SetTexture("_KnownTex",_known[i]);
-                Graphics.Blit(_filled[i+1],_filled[i],_reconstruction,4);
-                for (int sweep=0;sweep<2;sweep++)
-                {
-                    _reconstruction.SetVector("_Direction",new Vector4(1,0,0,0));
-                    Graphics.Blit(_filled[i],_temp[i],_reconstruction,5);
-                    _reconstruction.SetVector("_Direction",new Vector4(0,1,0,0));
-                    Graphics.Blit(_temp[i],_filled[i],_reconstruction,5);
-                }
-            }
-            int next=1-_historyIndex;
-            // Buffers above hold signed color residuals. Add the spatial
-            // illumination back before temporal smoothing / final composition.
-            Graphics.Blit(_filled[0],_temp[0],_reconstruction,8);
-            if (!_historyReady) Graphics.Blit(_temp[0],_history[next]);
-            else
-            {
-                _reconstruction.SetTexture("_HistoryTex",_history[_historyIndex]);
-                _reconstruction.SetFloat("_TemporalWeight",1f-Mathf.Exp(-dt/Mathf.Max(colorSmoothingSeconds,0.001f)));
-                Graphics.Blit(_temp[0],_history[next],_reconstruction,6);
-            }
-            _historyIndex=next; _historyReady=true;
+            if (!finite || max.x - min.x < 2f || max.y - min.y < 2f) continue;
+            _bounds[count] = Rect.MinMaxRect(min.x, min.y, max.x, max.y);
+            _poses[count] = pose; _hasPoses[count] = hasPose;
+            count++;
         }
-        finally { RenderTexture.active=previous; GL.sRGBWrite=srgb; }
+        if (count > 0 && _replayAllRequested)
+        {
+            // Change the mode only when new face pixels are ready. Switching
+            // Final skin -> entry on a held lost frame could expose that frame.
+            playEntryAnimation = true;
+            foreach (var face in _faces) if (face != null) face.Replay();
+            _replayAllRequested = false;
+        }
+        _assigner.Update(_bounds, count, now, Mathf.Max(0.5f, resetAfterAbsence));
+        ActiveFaceCount = 0;
+        for (int slot = 0; slot < MaximumFaces; slot++)
+        {
+            if (_layers[slot] != null) _layers[slot].enabled = false;
+            if (!_assigner.SlotIsVisible[slot] && _faces[slot] != null) _faces[slot].MarkMissing();
+        }
+        for (int detection = 0; detection < count; detection++)
+        {
+            int slot = _assigner.DetectionToSlot[detection];
+            if (slot < 0) continue;
+            if (_faces[slot] == null) _faces[slot] = new FacelessFaceRenderer(this);
+            var face = _faces[slot];
+            if (_assigner.SlotIsNew[slot]) face.Reset(_assigner.TrackIds[slot]);
+            // After any missing detection, do not charge the absence interval
+            // to that person's entry clock, even while others stayed visible.
+            float validElapsed = face.IsTracking ? elapsed : 0f;
+            if (!face.Update(source, _detections[detection], _poses[detection], _hasPoses[detection], now, validElapsed, paired)) continue;
+            if (_layers[slot] == null) _layers[slot] = CreateLayer(face);
+            _layers[slot].enabled = true;
+            _layers[slot].material = face.Composite;
+            _drawOrder[ActiveFaceCount++] = slot;
+        }
+        // Face area approximates distance. Restore raw foreground-face pixels
+        // above farther layers even while its own entry amount is still zero.
+        for (int i = 1; i < ActiveFaceCount; i++)
+        {
+            int slot = _drawOrder[i], j = i - 1;
+            float area = FaceArea(slot);
+            while (j >= 0 && FaceArea(_drawOrder[j]) > area)
+            { _drawOrder[j + 1] = _drawOrder[j]; j--; }
+            _drawOrder[j + 1] = slot;
+        }
+        for (int i = 0; i < ActiveFaceCount; i++) _layers[_drawOrder[i]].transform.SetAsLastSibling();
     }
-
-    void ApplyComposite(Material m)
+    float FaceArea(int slot)
     {
-        m.SetFloat("_VideoVisibility", _videoVisibility);
-        m.SetFloat("_Amount", _maskReady && _history != null ? FacePresence*effectAmount*EntryProgress : 0f);
-        if (!_maskReady || _history == null) return;
-        _regions.SetMaterial(m);
-        m.SetVector("_CameraSize",new Vector4(_cameraWidth,_cameraHeight,1f/_cameraWidth,1f/_cameraHeight));
-        m.SetFloatArray("_Stages",_stages);
-        m.SetTexture("_SkinTex",_history[_historyIndex]);
-        m.SetTexture("_SurfaceTex",_surface.Texture);
-        m.SetTexture("_InteriorTex",_interior.Texture);
-        m.SetFloat("_Volume",volume); m.SetFloat("_Grain",fineGrain);
-        m.SetFloat("_ShowMask",showMask ? 1f : 0f);
+        Rect b = _faces[slot].Regions.Bounds;
+        return b.width * b.height;
     }
 
-    /// <summary>Anchors for future plant prefabs. World position lies on the video
-    /// surface; rotation is the tracked head pose adjusted for preview mirroring.
-    /// Recommended ids: 168 (bridge), 6 (between eyes), 0 (above mouth).</summary>
+    RawImage CreateLayer(FacelessFaceRenderer face)
+    {
+        var go = new GameObject("Faceless track " + face.TrackId, typeof(RectTransform), typeof(CanvasRenderer), typeof(RawImage));
+        go.hideFlags = HideFlags.DontSave;
+        go.layer = screenImage.gameObject.layer;
+        go.transform.SetParent(screenImage.transform, false);
+        var image = go.GetComponent<RawImage>();
+        image.raycastTarget = false;
+        image.material = face.Composite;
+        return image;
+    }
+    void FitLayer(RawImage layer, Rect faceBounds)
+    {
+        // Crop each UI draw to its face bounds; never shade six full screens.
+        // Anchor coordinates account for uvRect mirroring and source rotation.
+        Rect uv = screenImage.uvRect;
+        float x0 = (faceBounds.xMin - 2f) / _cameraWidth, x1 = (faceBounds.xMax + 2f) / _cameraWidth;
+        float y0 = (faceBounds.yMin - 2f) / _cameraHeight, y1 = (faceBounds.yMax + 2f) / _cameraHeight;
+        float ax0 = (x0 - uv.x) / uv.width, ax1 = (x1 - uv.x) / uv.width;
+        float ay0 = (y0 - uv.y) / uv.height, ay1 = (y1 - uv.y) / uv.height;
+        Vector2 lo = new Vector2(Mathf.Clamp01(Mathf.Min(ax0, ax1)), Mathf.Clamp01(Mathf.Min(ay0, ay1)));
+        Vector2 hi = new Vector2(Mathf.Clamp01(Mathf.Max(ax0, ax1)), Mathf.Clamp01(Mathf.Max(ay0, ay1)));
+        var rect = layer.rectTransform;
+        rect.anchorMin = lo; rect.anchorMax = hi;
+        rect.offsetMin = rect.offsetMax = Vector2.zero;
+        layer.uvRect = new Rect(uv.x + lo.x * uv.width, uv.y + lo.y * uv.height,
+            (hi.x - lo.x) * uv.width, (hi.y - lo.y) * uv.height);
+    }
+    void ApplyBase(Material material)
+    {
+        material.SetFloat("_Amount", 0f); material.SetFloat("_OverlayOnly", 0f);
+        material.SetFloat("_VideoVisibility", _videoVisibility);
+        material.SetVector("_CameraSize", new Vector4(_cameraWidth, _cameraHeight, 1f / _cameraWidth, 1f / _cameraHeight));
+    }
+
+    void RefreshVisuals()
+    {
+        _visuals.Clear();
+        _controller.GetComponentsInChildren<Renderer>(true, _visuals);
+        foreach (var renderer in _visuals)
+        {
+            if (renderer == null || _originalVisibility.ContainsKey(renderer)) continue;
+            _originalVisibility[renderer] = renderer.forceRenderingOff;
+            var pointList = renderer.GetComponentInParent<PointListAnnotation>();
+            _pointVisuals[renderer] = pointList != null && pointList.GetComponentInParent<FaceLandmarkListAnnotation>() != null;
+        }
+    }
+
+    // Future plants: iterate slots, retain TrackId, and keep independent growth
+    // objects for each ID. Invalid/missing tracks return false for new anchors.
+    public bool TryGetFaceState(int slot, out int trackId, out float entry, out float growth)
+    {
+        trackId = 0; entry = growth = 0f;
+        if (slot < 0 || slot >= MaximumFaces || _faces[slot] == null) return false;
+        var face = _faces[slot];
+        trackId = face.TrackId; entry = face.EntryProgress; growth = face.GrowthProgress;
+        return face.Ready && face.IsTracking;
+    }
     public bool TryGetSurfaceAnchor(int landmarkId, out Pose pose, out float faceWidthWorld)
     {
-        pose=default; faceWidthWorld=0;
-        if (!IsTracking || !_pointsReady || screenImage == null || landmarkId<0 || landmarkId>=468) return false;
-        Rect rect=screenImage.rectTransform.rect, uv=screenImage.uvRect;
-        Vector2 p=_points[landmarkId];
-        Vector3 local=new Vector3(rect.xMin+(p.x/_cameraWidth-uv.x)/uv.width*rect.width,
-            rect.yMin+(p.y/_cameraHeight-uv.y)/uv.height*rect.height,0);
-        Matrix4x4 reflection=Matrix4x4.Scale(new Vector3(Mathf.Sign(uv.width),Mathf.Sign(uv.height),1));
-        Quaternion rotation=_controller.HasFacePose ? (reflection*HeadPose*reflection).rotation : Quaternion.identity;
-        pose=new Pose(screenImage.rectTransform.TransformPoint(local),screenImage.rectTransform.rotation*rotation);
-        faceWidthWorld=screenImage.rectTransform.TransformVector(Vector3.right*(_regions.Width/_cameraWidth*rect.width)).magnitude;
-        return true;
+        for (int i = 0; i < MaximumFaces; i++)
+            if (TryGetSurfaceAnchor(i, landmarkId, out pose, out faceWidthWorld)) return true;
+        pose = default; faceWidthWorld = 0f; return false;
     }
-
-    void ResetEntryClock()
+    public bool TryGetSurfaceAnchor(int slot, int landmarkId, out Pose pose, out float faceWidthWorld)
     {
-        PresentationSeconds = GrowthProgress = 0f;
-        _entryFrameReady = false;
+        pose = default; faceWidthWorld = 0f;
+        if (slot < 0 || slot >= MaximumFaces || landmarkId < 0 || landmarkId >= 468 || screenImage == null) return false;
+        var face = _faces[slot];
+        if (face == null || !face.Ready || !face.IsTracking) return false;
+        Rect rect = screenImage.rectTransform.rect, uv = screenImage.uvRect;
+        Vector2 p = face.Points[landmarkId];
+        Vector3 local = new Vector3(rect.xMin + (p.x / _cameraWidth - uv.x) / uv.width * rect.width,
+            rect.yMin + (p.y / _cameraHeight - uv.y) / uv.height * rect.height, 0);
+        Matrix4x4 reflection = Matrix4x4.Scale(new Vector3(Mathf.Sign(uv.width), Mathf.Sign(uv.height), 1));
+        Quaternion rotation = face.HasPose ? (reflection * face.HeadPose * reflection).rotation : Quaternion.identity;
+        pose = new Pose(screenImage.rectTransform.TransformPoint(local), screenImage.rectTransform.rotation * rotation);
+        faceWidthWorld = screenImage.rectTransform.TransformVector(Vector3.right * (face.Regions.Width / _cameraWidth * rect.width)).magnitude;
+        return true;
     }
 
     [ContextMenu("Replay entry / 重播入场")]
-    public void ReplayEntry() { _replayRequested = true; }
+    public void ReplayEntry()
+    {
+        _replayAllRequested = true;
+    }
     [ContextMenu("Show final skin / 显示最终皮肤")]
-    public void ShowFinalSkin() { _replayRequested=false; playEntryAnimation=false; effectAmount=1f; GrowthProgress=0; }
+    public void ShowFinalSkin() { _replayAllRequested = false; playEntryAnimation = false; effectAmount = 1f; }
 
     void OnGUI()
     {
-        if (Event.current.type==EventType.KeyDown && Event.current.keyCode==KeyCode.H)
-        { showControls=!showControls; Event.current.Use(); }
-        if (Event.current.type==EventType.KeyDown && Event.current.keyCode==KeyCode.R)
+        if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.H)
+        { showControls = !showControls; Event.current.Use(); }
+        if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.R)
         { ReplayEntry(); Event.current.Use(); }
         if (!showControls) return;
-        _controlRect=new Rect(UnityEngine.Screen.width-244,12,232,268);
-        GUI.Window(GetInstanceID(),_controlRect,DrawControls,"Faceless / Skin");
+        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 280), DrawControls, "Faceless / 6 faces");
     }
     void DrawControls(int id)
     {
-        GUILayout.Label(IsTracking ? "Tracking / "+Mathf.RoundToInt(FacePresence*100)+"%" : "Waiting for face");
-        if (_runner != null && _runner.PreviewIsSynchronized) GUILayout.Label("Paired camera + landmarks");
-        GUILayout.Label(playEntryAnimation ? "Entry / "+Mathf.RoundToInt(EntryProgress*100)+"% ("+EntryDuration.ToString("0.0")+" s)" : "Final skin");
-        GUILayout.Label("Erase / "+effectAmount.ToString("0.00"));
-        effectAmount=GUILayout.HorizontalSlider(effectAmount,0,1);
-        showLandmarks=GUILayout.Toggle(showLandmarks,"468 landmarks");
-        showMask=GUILayout.Toggle(showMask,"Regions + boundary");
+        GUILayout.Label("Faces / " + ActiveFaceCount + " / " + MaximumFaces);
+        GUILayout.Label("Camera / " + _captureFps.ToString("0.0") + " fps");
+        GUILayout.Label("Entry / " + Mathf.Max(0.1f, entryDurationSeconds).ToString("0.0") + " s per person");
+        GUILayout.Label("Erase / " + effectAmount.ToString("0.00"));
+        effectAmount = GUILayout.HorizontalSlider(effectAmount, 0, 1);
+        showLandmarks = GUILayout.Toggle(showLandmarks, "468 landmarks / face");
+        showMask = GUILayout.Toggle(showMask, "Regions + boundary");
         if (GUILayout.Button("Final skin")) ShowFinalSkin();
-        if (GUILayout.Button("Replay entry (R)")) ReplayEntry();
-        if (GUILayout.Button("Hide controls (H)")) showControls=false;
+        if (GUILayout.Button("Replay all entries (R)")) ReplayEntry();
+        if (GUILayout.Button("Hide controls (H)")) showControls = false;
     }
 
-    void RestoreVisuals()
+    void ResetTracks()
     {
-        if (_annotationRenderers==null) return;
-        for (int i=0;i<_annotationRenderers.Length;i++)
-            if (_annotationRenderers[i]!=null) _annotationRenderers[i].forceRenderingOff=_originalVisibility[i];
-        _annotationRenderers=null;
-    }
-    static void Release(RenderTexture rt) { if (rt!=null) {rt.Release(); Destroy(rt);} }
-    void ReleaseTextures()
-    {
-        if (_known!=null) foreach(var t in _known) Release(t);
-        if (_temp!=null) foreach(var t in _temp) Release(t);
-        if (_filled!=null) foreach(var t in _filled) Release(t);
-        if (_history!=null) foreach(var t in _history) Release(t);
-        Release(_donorTexture);
-        Release(_guideTexture);
-        _known=_temp=_filled=_history=null; _donorTexture=_guideTexture=null; _historyReady=false;
+        _assigner.Reset(); _version = -1; ActiveFaceCount = 0;
+        _lastPair = _lastSeen = -100f; _captureFps = 0f;
+        for (int i = 0; i < MaximumFaces; i++)
+        {
+            if (_faces[i] != null) _faces[i].Dispose();
+            if (_layers[i] != null) { _layers[i].enabled = false; Destroy(_layers[i].gameObject); }
+            _faces[i] = null; _layers[i] = null;
+        }
     }
     void OnDisable()
     {
-        if (_boundImage && screenImage!=null && screenImage.material==_composite) screenImage.material=_originalMaterial;
-        _boundImage=false;
-        RestoreVisuals(); ReleaseTextures();
-        _surface.Dispose();
-        _interior.Dispose();
-        if (_reconstruction!=null) Destroy(_reconstruction);
-        if (_composite!=null) Destroy(_composite);
-        _reconstruction=_composite=null;
-        IsTracking=false; FacePresence=GrowthProgress=0;
+        if (_boundImage && screenImage != null && screenImage.material == _baseMaterial)
+            screenImage.material = _originalMaterial;
+        _boundImage = false;
+        ResetTracks();
+        foreach (var pair in _originalVisibility)
+            if (pair.Key != null) pair.Key.forceRenderingOff = pair.Value;
+        _originalVisibility.Clear(); _pointVisuals.Clear(); _visuals.Clear();
+        if (_baseMaterial != null) Destroy(_baseMaterial);
+        _baseMaterial = null;
     }
 }

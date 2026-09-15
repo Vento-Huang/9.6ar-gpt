@@ -687,6 +687,7 @@ def interior_tests(work,surface,tex,render,read,reconstruct,seed_texture):
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--work',type=Path,required=True);ap.add_argument('--egl')
     ap.add_argument('--interior-only',action='store_true',help='Run new gap regression after the common shader smoke checks')
+    ap.add_argument('--multiface-only',action='store_true',help='Run six-face overlay regression after the common shader smoke checks')
     a=ap.parse_args()
     kwargs={'backend':'egl'}
     if a.egl:kwargs['libegl']=a.egl
@@ -708,7 +709,7 @@ def main():
     points[:,0]*=w;points[:,1]=(1-points[:,1])*h
     vals,groups=fit_regions(points)
     vals.update(_CameraSize=[w,h,1/w,1/h],_Amount=1.,_Volume=0.,_Grain=0.,_ShowMask=0.,
-                _Color=[1,1,1,1],_Stages=np.ones(len(groups)),_VideoVisibility=1.,_LocalColorStrength=1.,_HighlightSuppression=.85)
+                _Color=[1,1,1,1],_Stages=np.ones(len(groups)),_VideoVisibility=1.,_LocalColorStrength=1.,_HighlightSuppression=.85,_OverlayOnly=0.)
     buffer=ctx.buffer(np.array([-1,-1,1,-1,-1,1,1,1],dtype='f4').tobytes())
     programs={}
     for name in ['fragDonors','fragGuide','fragSeeds','fragGaussian','fragNormalize','fragPull',
@@ -815,6 +816,10 @@ def main():
     outside=(xx<b[0]-2)|(xx>b[2]+2)|(yy<b[1]-2)|(yy>b[3]+2)
     outside_error=float(np.max(np.abs(result[:,:,:3][outside]-image[outside])))
     assert outside_error<1e-5,outside_error
+    if a.multiface_only:
+        from verify_multiface import multi_face_tests
+        multi_face_tests(a.work, surface, tex, render, read, reconstruct)
+        return
     if a.interior_only:
         interior_tests(a.work,surface,tex,render,read,reconstruct,known[0])
         return
