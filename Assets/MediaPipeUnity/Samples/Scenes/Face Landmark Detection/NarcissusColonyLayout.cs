@@ -1,8 +1,8 @@
 using System;
 using UnityEngine;
 
-/// <summary>Stable per-track variation and conservative crown spacing, independent of frame rate.
-/// Crown envelopes include petals, folded buds, corona and breathing. Stems/leaves may weave.</summary>
+/// <summary>Stable per-track variation and shallow crown spacing, independent of frame rate.
+/// Crown envelopes guide spacing; depth is bounded to keep flowers attached to skin.</summary>
 public sealed class NarcissusColonyLayout
 {
     public const int Count=38;
@@ -34,7 +34,7 @@ public sealed class NarcissusColonyLayout
             Sizes[i]=rank<8?Mathf.Lerp(.105f,.135f,n):rank<20?Mathf.Lerp(.071f,.099f,n):Mathf.Lerp(.040f,.065f,n);
             Delays[i]=i<5?i*.65f:Mathf.Lerp(2.7f,11f,Noise(seed,200+i));
             Rotations[i]=Quaternion.Euler((Noise(seed,300+i)-.5f)*26,(Noise(seed,400+i)-.5f)*26,Noise(seed,500+i)*360);
-            Jitter[i]=new Vector3((Noise(seed,600+i)-.5f)*.035f,(Noise(seed,700+i)-.5f)*.035f,Noise(seed,800+i)*.045f);
+            Jitter[i]=new Vector3((Noise(seed,600+i)-.5f)*.035f,(Noise(seed,700+i)-.5f)*.035f,Noise(seed,800+i)*.008f);
         }
         Delays[_order[Count-1]]=11f; // The final small bloom completes at growth second 21.
         Array.Sort(_order,(a,b)=>Sizes[b].CompareTo(Sizes[a]));
@@ -68,7 +68,10 @@ public sealed class NarcissusColonyLayout
                     if(lateral<distance*distance)
                         lift=Mathf.Max(lift,Mathf.Sqrt(distance*distance-lateral)-dz);
                 }
+                // Do not stack sphere-sized layers away from the face. Flowers are thin,
+                // not solid spheres: permit envelope overlap at a bounded shallow depth.
                 float cost=shift.sqrMagnitude+lift*lift*.55f;
+                lift=Mathf.Min(lift,width*.022f);
                 if(cost<bestCost) { bestCost=cost;best=p+normal*lift;bestShift=shift; }
             }
             Centers[i]=best;

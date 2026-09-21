@@ -11,6 +11,7 @@ public sealed class NarcissusModel
     public readonly Color[] Colors;
     public readonly int[] Parts, Triangles;
     public static readonly Vector3 FlowerBase = new Vector3(0, 0.25f, 1.2f);
+    public static readonly Vector3 AttachedBase = new Vector3(0, 0.25f, 0.19f);
     public int VertexCount => Open.Length;
     readonly List<Vector3> _open = new List<Vector3>(), _closed = new List<Vector3>();
     readonly List<Vector2> _uv = new List<Vector2>();
@@ -123,7 +124,7 @@ public sealed class NarcissusModel
     /// <summary>Latest delay is 11 seconds, so every flower completes exactly by 21.
     /// All vertices collapse to their root at/before their scheduled birth.</summary>
     public void Evaluate(float seconds,float delay,float breathingPhase,Vector3 root,
-        Quaternion rotation,float scale,Vector3[] output,int offset,Vector3 headOffset=default)
+        Quaternion rotation,float scale,Vector3[] output,int offset,Vector3 headOffset=default,bool attached=false)
     {
         float stem=Ease(seconds,delay,delay+6);
         float leaves=Ease(seconds,delay+1,delay+8);
@@ -136,6 +137,12 @@ public sealed class NarcissusModel
             if (Parts[i]==0) p=Open[i]*stem;
             else if (Parts[i]==1) p=Vector3.Lerp(Closed[i],Open[i],leaves)*stem;
             else p=FlowerBase*stem+Vector3.Lerp(Closed[i],Open[i],bloom)*(bud*breath);
+            if (attached)
+            {
+                if (Parts[i]==0) p.z*=AttachedBase.z/FlowerBase.z;
+                else if (Parts[i]==1) p.z*=.5f;
+                else p.z-=(FlowerBase.z-AttachedBase.z)*stem;
+            }
             // Bend the stem continuously toward its spaced crown; roots remain attached.
             float bend=Parts[i]==0?UV[i].y*UV[i].y:Parts[i]==1?UV[i].x*.08f:1f;
             output[offset+i]=root+rotation*(p*scale)+headOffset*bend;

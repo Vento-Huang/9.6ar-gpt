@@ -36,7 +36,7 @@ Shader "Faceless/NarcissusDisplay"
             {v2f o;o.local=v.vertex;o.position=UnityObjectToClipPos(v.vertex);o.uv=v.uv;o.color=v.color*_Color;return o;}
             float4 frag(v2f i):SV_Target
             {
-                // The offscreen pollen pass already writes premultiplied RGB.
+                // The offscreen pass stores premultiplied plants plus additive firefly light.
                 // Do not multiply alpha twice: soft particles must not develop dark rims.
                 float4 c=tex2D(_MainTex,i.uv);
                 c.rgb*=i.color.rgb*i.color.a;c.a*=i.color.a;

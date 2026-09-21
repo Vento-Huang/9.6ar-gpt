@@ -75,8 +75,8 @@ public sealed class NarcissusFaceGrowth : IDisposable
             for (int flower=0; flower<Anchors.Length; flower++)
             {
                 _model.Evaluate(seconds,_layout.Delays[flower],Time.unscaledTime*1.15f+flower*.7f,
-                    _roots[flower],_rotations[flower],width*_layout.Sizes[flower],_vertices,flower*_model.VertexCount,
-                    _layout.Centers[flower]-_baseCenters[flower]);
+                    _roots[flower],_rotations[flower],width*_layout.Sizes[flower]*1.15f,_vertices,flower*_model.VertexCount,
+                    _layout.Centers[flower]-_baseCenters[flower],true);
             }
             BuildRoots(seconds,rotation,width);
             // Include spaced crowns and drifting pollen in the cropped image.
@@ -134,9 +134,9 @@ public sealed class NarcissusFaceGrowth : IDisposable
             Vector2 p=face.Points[Anchors[i]];
             _roots[i]=new Vector3(p.x,p.y,(p.x-center.x)*slopeX+(p.y-center.y)*slopeY);
             _rotations[i]=rotation*_layout.Rotations[i];
-            float scale=width*_layout.Sizes[i], delay=_layout.Delays[i];
+            float scale=width*_layout.Sizes[i]*1.15f, delay=_layout.Delays[i];
             float stem=NarcissusModel.Ease(seconds,delay,delay+6), bud=NarcissusModel.Ease(seconds,delay+2,delay+6);
-            _baseCenters[i]=_roots[i]+_rotations[i]*((NarcissusModel.FlowerBase*stem+new Vector3(0,0,.12f)*bud)*scale);
+            _baseCenters[i]=_roots[i]+_rotations[i]*((NarcissusModel.AttachedBase*stem+new Vector3(0,0,.12f)*bud)*scale);
             _desired[i]=_baseCenters[i]+rotation*(_layout.Jitter[i]*(width*stem));
             _radii[i]=scale*1.13f*bud;
         }
@@ -174,15 +174,15 @@ public sealed class NarcissusFaceGrowth : IDisposable
             int plant=(i*7)%Anchors.Length;
             float phase=Mathf.Repeat(Time.unscaledTime*.12f+NarcissusColonyLayout.Noise(_trackId,1200+i),1);
             float alpha=Mathf.Sin(phase*Mathf.PI);
-            alpha*=alpha*.42f*NarcissusModel.Ease(seconds,_layout.Delays[plant]+5,_layout.Delays[plant]+8);
+            alpha*=alpha*(.7f+.3f*Mathf.Sin(Time.unscaledTime*1.8f+i)*Mathf.Sin(Time.unscaledTime*1.8f+i))* .95f*NarcissusModel.Ease(seconds,_layout.Delays[plant]+5,_layout.Delays[plant]+8);
             if(!_owner.showPollen)alpha=0;
-            Vector3 drift=new Vector3(Mathf.Sin(phase*5+i)*.07f,phase*.28f,.025f+phase*.11f);
+            Vector3 drift=new Vector3(Mathf.Sin(phase*5+i)*.18f,phase*.35f-.06f,.06f+phase*.10f);
             Vector3 p=_layout.Centers[plant]+rotation*(drift*width);
-            float radius=width*Mathf.Lerp(.003f,.007f,NarcissusColonyLayout.Noise(_trackId,1300+i));
+            float radius=width*Mathf.Lerp(.010f,.018f,NarcissusColonyLayout.Noise(_trackId,1300+i));
             for(int corner=0;corner<4;corner++)
             {
                 _pollenVertices[i*4+corner]=p+new Vector3((corner%2*2-1)*radius,(corner/2*2-1)*radius,0);
-                _pollenColors[i*4+corner]=new Color(.82f,.85f,.61f,alpha);
+                _pollenColors[i*4+corner]=new Color(1f,.94f,.48f,alpha);
             }
             if(alpha>.001f)
             {

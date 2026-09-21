@@ -50,7 +50,7 @@ Shader "Hidden/Faceless/Narcissus"
         }
         Pass
         {
-            Cull Off ZWrite Off ZTest LEqual Blend One OneMinusSrcAlpha
+            Cull Off ZWrite Off ZTest LEqual Blend One One, Zero One
             CGPROGRAM
             #pragma target 3.0
             #pragma vertex vert
@@ -78,8 +78,11 @@ Shader "Hidden/Faceless/Narcissus"
             float4 fragPollen(v2f i):SV_Target
             {
                 float radial=length(i.uv*2-1);
-                float opacity=exp(-5*radial*radial)*(1-smoothstep(.6,1,radial))*i.color.a;
-                return float4(i.color.rgb*opacity,opacity);
+                float halo=exp(-4*radial*radial)*(1-smoothstep(.65,1,radial));
+                float core=exp(-65*radial*radial);
+                float3 emission=(i.color.rgb*halo*.48+float3(1,1,.88)*core)*i.color.a;
+                // Add light without changing the underlying plant coverage alpha.
+                return float4(emission,0);
             }
             ENDCG
         }

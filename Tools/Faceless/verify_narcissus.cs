@@ -55,15 +55,20 @@ static class NarcissusChecks
             Check(colony.Delays.Max()==11 && colony.Delays.Min()>=0,"21-second schedule changed");
             for(int i=0;i<38;i++)
             {
-                desired[i]=rotation*(roots[i]+colony.Rotations[i]*((NarcissusModel.FlowerBase+new Vector3(0,0,.12f))*(width*colony.Sizes[i]))+colony.Jitter[i]*width);
-                radii[i]=width*colony.Sizes[i]*1.13f;
+                desired[i]=rotation*(roots[i]+colony.Rotations[i]*((NarcissusModel.AttachedBase+new Vector3(0,0,.12f))*(width*colony.Sizes[i]*1.15f))+colony.Jitter[i]*width);
+                radii[i]=width*colony.Sizes[i]*1.15f*1.13f;
             }
             colony.Solve(desired,radii,rotation,width);
             colony.Solve(desired,radii,rotation,width);
             for(int i=0;i<38;i++)for(int j=0;j<i;j++)
             {
                 float margin=(colony.Centers[i]-colony.Centers[j]).magnitude-radii[i]-radii[j];
-                minimumMargin=Math.Min(minimumMargin,margin);Check(margin>=-.00001f,"crown envelope intersection");
+                minimumMargin=Math.Min(minimumMargin,margin);
+            }
+            for(int i=0;i<38;i++)
+            {
+                float depth=Vector3.Dot(colony.Centers[i]-desired[i],rotation*Vector3.forward);
+                Check(depth<=width*.02201f && depth>=-.00001f,"crown lifted away from skin");
             }
             var previous=colony.Centers.ToArray();colony.Solve(desired,radii,rotation,width);
             Check(previous.Zip(colony.Centers,(x,y)=>(x-y).magnitude).Max()<.00001f,"stationary layout jitter");
@@ -76,19 +81,26 @@ static class NarcissusChecks
             for(int i=0;i<38;i++)
             {
                 float d=colony.Delays[i],stem=NarcissusModel.Ease(seconds,d,d+6),bud=NarcissusModel.Ease(seconds,d+2,d+6);
-                desired[i]=roots[i]+colony.Rotations[i]*((NarcissusModel.FlowerBase*stem+new Vector3(0,0,.12f)*bud)*(width*colony.Sizes[i]))+colony.Jitter[i]*(width*stem);
-                radii[i]=width*colony.Sizes[i]*1.13f*bud;
+                desired[i]=roots[i]+colony.Rotations[i]*((NarcissusModel.AttachedBase*stem+new Vector3(0,0,.12f)*bud)*(width*colony.Sizes[i]*1.15f))+colony.Jitter[i]*(width*stem);
+                radii[i]=width*colony.Sizes[i]*1.15f*1.13f*bud;
             }
             colony.Solve(desired,radii,Quaternion.identity,width);
             for(int i=0;i<38;i++)
             {
                 float d=colony.Delays[i],stem=NarcissusModel.Ease(seconds,d,d+6);
                 Vector3 baseCenter=desired[i]-colony.Jitter[i]*(width*stem);
-                model.Evaluate(seconds,d,0,roots[i],colony.Rotations[i],width*colony.Sizes[i],colonyVertices,i*model.VertexCount,colony.Centers[i]-baseCenter);
+                model.Evaluate(seconds,d,0,roots[i],colony.Rotations[i],width*colony.Sizes[i]*1.15f,colonyVertices,i*model.VertexCount,colony.Centers[i]-baseCenter,true);
             }
             snapshots[seconds.ToString(CultureInfo.InvariantCulture)]=colonyVertices.Select(XYZ).ToArray();
         }
-        Console.WriteLine("PASS: 20 seeded/rotated crown layouts, stationary stability, variable scales and schedule; minimum crown gap="+minimumMargin);
+        Console.WriteLine("PASS: 20 seeded/rotated depth-bounded crown layouts, stationary stability, variable scales and schedule; envelope overlap permitted; minimum envelope gap="+minimumMargin);
+        var attached=new Vector3[model.VertexCount];
+        model.Evaluate(21,0,0,Vector3.zero,Quaternion.identity,1,attached,0,Vector3.zero,true);
+        Check(attached.Where((p,i)=>model.Parts[i]==0).Max(p=>p.z)<.191f,"stem is too long");
+        for(int i=0;i<model.VertexCount;i++)
+            if(model.Parts[i]>=2)
+                Check((attached[i]-vertices[i]-new Vector3(0,0,NarcissusModel.AttachedBase.z-NarcissusModel.FlowerBase.z)).magnitude<.00001f,"flower shape changed");
+        Console.WriteLine("PASS: attached stem <=0.19 model units; mature flower geometry preserved by translation.");
         string destination=Environment.GetEnvironmentVariable("NARCISSUS_OUTPUT");
         if(!string.IsNullOrEmpty(destination))
         {
@@ -141,7 +153,7 @@ namespace UnityEngine
         public const float PI=(float)Math.PI;
         public static float Sqrt(float x)=>(float)Math.Sqrt(x);public static float Sin(float x)=>(float)Math.Sin(x);public static float Cos(float x)=>(float)Math.Cos(x);
         public static float Pow(float x,float y)=>(float)Math.Pow(x,y);public static float Abs(float x)=>Math.Abs(x);
-        public static float Max(float x,float y)=>Math.Max(x,y);public static float Clamp01(float x)=>Math.Max(0,Math.Min(1,x));
+        public static float Min(float x,float y)=>Math.Min(x,y);public static float Max(float x,float y)=>Math.Max(x,y);public static float Clamp01(float x)=>Math.Max(0,Math.Min(1,x));
         public static float Lerp(float a,float b,float t)=>a+(b-a)*Clamp01(t);
     }
 }
