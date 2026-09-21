@@ -36,6 +36,8 @@ public sealed class NarcissusColonyLayout
             Rotations[i]=Quaternion.Euler((Noise(seed,300+i)-.5f)*26,(Noise(seed,400+i)-.5f)*26,Noise(seed,500+i)*360);
             Jitter[i]=new Vector3((Noise(seed,600+i)-.5f)*.035f,(Noise(seed,700+i)-.5f)*.035f,Noise(seed,800+i)*.008f);
         }
+        // Reserve three existing blooms for the central nasal gap.
+        for(int i=10;i<=12;i++) { Sizes[i]=.092f;Jitter[i]=Vector3.zero;Delays[i]=4f+(i-10)*1.5f; }
         Delays[_order[Count-1]]=11f; // The final small bloom completes at growth second 21.
         Array.Sort(_order,(a,b)=>Sizes[b].CompareTo(Sizes[a]));
     }
@@ -57,6 +59,7 @@ public sealed class NarcissusColonyLayout
                 float angle=((candidate-1)%8)*Mathf.PI*.25f;
                 Vector3 shift=_planned?faceRotation*(_localShifts[i]*width*Mathf.Clamp01(radii[i]/Mathf.Max(width*Sizes[i]*1.13f,.00001f))):
                     (right*Mathf.Cos(angle)+up*Mathf.Sin(angle))*(ring*width*.021f);
+                if(i>=10 && i<=12) shift=Vector3.zero;
                 Vector3 p=desired[i]+shift;
                 float lift=0;
                 for(int previous=0;previous<order;previous++)

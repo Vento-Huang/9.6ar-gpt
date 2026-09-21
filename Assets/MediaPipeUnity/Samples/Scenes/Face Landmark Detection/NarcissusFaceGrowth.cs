@@ -7,7 +7,7 @@ using UnityEngine.UI;
 public sealed class NarcissusFaceGrowth : IDisposable
 {
     // Centre first, then forehead, eyes, nasolabial folds, mouth and chin.
-    public static readonly int[] Anchors={168,6,2,0,17,108,9,337,105,66,107,336,296,334,
+    public static readonly int[] Anchors={168,6,2,0,17,108,9,337,105,66,98,4,327,334,
         159,133,362,386,50,100,329,280,187,203,423,411,61,40,270,291,211,181,405,431,170,200,395,175};
     public static float Delay(int plant)
     {
@@ -28,6 +28,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
     readonly Vector3[] _roots=new Vector3[38], _desired=new Vector3[38], _baseCenters=new Vector3[38];
     readonly Quaternion[] _rotations=new Quaternion[38];
     readonly float[] _radii=new float[38];
+    readonly Vector4[] _cupCenters=new Vector4[38],_cupAxes=new Vector4[38];
     bool _layoutReady, _trackingReady;
     readonly Vector2[] _stablePoints=new Vector2[468];
     Quaternion _stableRotation;
@@ -89,6 +90,14 @@ public sealed class NarcissusFaceGrowth : IDisposable
                     _roots[flower],_rotations[flower],width*_layout.Sizes[flower]*FlowerScale,_vertices,flower*_model.VertexCount,
                     _layout.Centers[flower]-_baseCenters[flower],true,_sway[flower]*NarcissusModel.Ease(seconds,_layout.Delays[flower],_layout.Delays[flower]+6));
                 UpdateBoneNodes(flower,seconds,width);
+                float scale=width*_layout.Sizes[flower]*FlowerScale;
+                float stem=NarcissusModel.Ease(seconds,_layout.Delays[flower],_layout.Delays[flower]+6);
+                float bloom=NarcissusModel.Ease(seconds,_layout.Delays[flower]+4,_layout.Delays[flower]+10);
+                Vector3 cupRoot=_roots[flower]+_rotations[flower]*(NarcissusModel.AttachedBase*(scale*stem))+
+                    _layout.Centers[flower]-_baseCenters[flower]+_sway[flower]*stem;
+                Vector3 axis=_rotations[flower]*Vector3.forward;
+                _cupCenters[flower]=new Vector4(cupRoot.x,cupRoot.y,cupRoot.z,scale*.33f*bloom);
+                _cupAxes[flower]=new Vector4(axis.x,axis.y,axis.z,scale*.47f*bloom);
             }
             BuildRoots(seconds,rotation,width);
             // Include spaced crowns and drifting pollen in the cropped image.
@@ -103,6 +112,9 @@ public sealed class NarcissusFaceGrowth : IDisposable
             _mesh.RecalculateNormals();
             _mesh.bounds=new Bounds(new Vector3(bounds.center.x,bounds.center.y,0),new Vector3(bounds.width,bounds.height,width*12));
             _material.SetVector("_PlantBounds",new Vector4(bounds.xMin,bounds.yMin,bounds.width,bounds.height));
+            _material.SetVectorArray("_CupCenters",_cupCenters);_material.SetVectorArray("_CupAxes",_cupAxes);
+            _material.SetFloat("_FlowerBrightness",_owner.flowerBrightness);
+            _material.SetFloat("_FireflyBrightness",_owner.fireflyBrightness);
             _material.SetFloat("_DepthScale",Mathf.Max(width*12,1));
             int rw=Mathf.Max(64,Mathf.RoundToInt(512*bounds.width/Mathf.Max(bounds.width,bounds.height)));
             int rh=Mathf.Max(64,Mathf.RoundToInt(512*bounds.height/Mathf.Max(bounds.width,bounds.height)));
@@ -299,12 +311,13 @@ public sealed class NarcissusFaceGrowth : IDisposable
         if (_mesh==null)
         {
             int count=_model.VertexCount*Anchors.Length+RootCount*(RootSteps+1)*RootSides;
-            _vertices=new Vector3[count]; var uv=new Vector2[count]; var colors=new Color[count];
+            _vertices=new Vector3[count]; var uv=new Vector2[count]; var ids=new Vector2[count]; var colors=new Color[count];
             var indices=new int[_model.Triangles.Length*Anchors.Length+RootCount*RootSteps*RootSides*6];
             for (int flower=0;flower<Anchors.Length;flower++)
             {
                 int first=flower*_model.VertexCount;
                 Array.Copy(_model.UV,0,uv,first,_model.VertexCount);
+                for(int v=0;v<_model.VertexCount;v++) ids[first+v]=new Vector2(flower,0);
                 Array.Copy(_model.Colors,0,colors,first,_model.VertexCount);
                 for (int j=0;j<_model.Triangles.Length;j++) indices[flower*_model.Triangles.Length+j]=first+_model.Triangles[j];
             }
@@ -322,7 +335,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
                 indices[cursor++]=b;indices[cursor++]=d;indices[cursor++]=c;
             }
             _mesh=new Mesh {name="Narcissus living colony",hideFlags=HideFlags.HideAndDontSave};
-            _mesh.MarkDynamic(); _mesh.vertices=_vertices; _mesh.uv=uv; _mesh.colors=colors; _mesh.triangles=indices;
+            _mesh.MarkDynamic(); _mesh.vertices=_vertices; _mesh.uv=uv; _mesh.uv2=ids; _mesh.colors=colors; _mesh.triangles=indices;
         }
         if (_pollenMesh==null)
         {

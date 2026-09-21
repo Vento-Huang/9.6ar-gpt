@@ -17,13 +17,14 @@ uv=np.array(data['uv']);colors=np.array(data['colors']);parts=np.array(data['par
 ctx=moderngl.create_standalone_context(backend='egl',libegl='libEGL.so.1')
 body=(src/'Resources/FacelessNarcissus.shader').read_text().split('float4 frag(v2f i):SV_Target')[1].split('ENDCG')[0]
 for a,b in [('float4','vec4'),('float3','vec3'),('float2','vec2'),('lerp','mix')]:body=re.sub(r'\b'+a+r'\b',b,body)
-fragment='#version 330\n#define saturate(x) clamp(x,0.0,1.0)\nstruct v2f{vec3 normal;vec4 color;vec2 uv;};\nin vec3 N;in vec4 C;in vec2 U;out vec4 result;\nvec4 shade(v2f i)'+body+'\nvoid main(){v2f i;i.normal=N;i.color=C;i.uv=U;result=shade(i);}'
+fragment='#version 330\n#define saturate(x) clamp(x,0.0,1.0)\nstruct v2f{vec3 normal;vec4 color;vec2 uv;vec3 world;float flower;};\nin vec3 N;in vec4 C;in vec2 U;out vec4 result;uniform float _FlowerBrightness;uniform vec4 _CupCenters[38],_CupAxes[38];\nvec4 shade(v2f i)'+body+'\nvoid main(){v2f i;i.normal=N;i.color=C;i.uv=U;i.world=vec3(0);i.flower=0;result=shade(i);}'
 vertex='''#version 330
 in vec3 P;in vec3 normal;in vec4 color;in vec2 uv;
 out vec3 N;out vec4 C;out vec2 U;uniform vec4 bounds;
 void main(){gl_Position=vec4((P.xy-bounds.xy)/bounds.zw*2.-1.,-P.z/30.,1.);N=normal;C=color;U=uv;}
 '''
 program=ctx.program(vertex_shader=vertex,fragment_shader=fragment)
+program['_FlowerBrightness'].value=1.3
 # Compile the actual projection body for both UV/depth branches too. This is
 # GLSL translation validation, not a claim of native Metal compilation.
 production_vertex=(src/'Resources/FacelessNarcissus.shader').read_text().split('v2f vert(appdata v)')[1].split('float4 frag')[0]
@@ -32,13 +33,13 @@ for defines in ['#define UNITY_NEAR_CLIP_VALUE -1.0\n', '#define UNITY_UV_STARTS
     test_vertex='''#version 330
 #define saturate(x) clamp(x,0.0,1.0)
 '''+defines+'''
-struct appdata {vec4 vertex;vec3 normal;vec4 color;vec2 uv;};
-struct v2f {vec4 position;vec3 normal;vec4 color;vec2 uv;};
+struct appdata {vec4 vertex;vec3 normal;vec4 color;vec2 uv;vec2 flower;};
+struct v2f {vec4 position;vec3 normal;vec4 color;vec2 uv;vec3 world;float flower;};
 uniform vec4 _PlantBounds;uniform float _DepthScale;
 in vec3 P;in vec3 normal;in vec4 color;in vec2 uv;
 out vec3 N;out vec4 C;out vec2 U;
 v2f project(appdata v)'''+production_vertex+'''
-void main(){appdata v;v.vertex=vec4(P,1);v.normal=normal;v.color=color;v.uv=uv;
+void main(){appdata v;v.vertex=vec4(P,1);v.normal=normal;v.color=color;v.uv=uv;v.flower=vec2(0);
 v2f o=project(v);gl_Position=o.position;N=o.normal;C=o.color;U=o.uv;}
 '''
     check_program=ctx.program(vertex_shader=test_vertex,fragment_shader=fragment);check_program.release()
