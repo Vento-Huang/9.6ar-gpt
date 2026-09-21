@@ -19,7 +19,16 @@ public sealed class NarcissusFaceGrowth : IDisposable
     readonly MidFaceEraseMask _owner;
     RawImage _image;
     Mesh _mesh;
-    Material _material;
+    Material _material, _displayMaterial;
+    Mesh _pollenMesh;
+    Vector3[] _pollenVertices;
+    Color[] _pollenColors;
+    const int RootCount=12, RootSteps=12, RootSides=6, PollenCount=24;
+    readonly NarcissusColonyLayout _layout=new NarcissusColonyLayout();
+    readonly Vector3[] _roots=new Vector3[38], _desired=new Vector3[38], _baseCenters=new Vector3[38];
+    readonly Quaternion[] _rotations=new Quaternion[38];
+    readonly float[] _radii=new float[38];
+    bool _layoutReady;
     RenderTexture _target;
     Vector3[] _vertices;
     float _lastRender=-100;
@@ -35,7 +44,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
         float seconds=Mathf.Max(0,face.PresentationSeconds-Mathf.Max(.1f,_owner.entryDurationSeconds));
         seconds=seconds*21f/Mathf.Max(.1f,_owner.growthDurationSeconds);
         if (seconds<=0) { if (_image!=null) _image.enabled=false; return; }
-        if (_trackId!=face.TrackId) { _trackId=face.TrackId; _lastRender=-100; }
+        if (_trackId!=face.TrackId) { _trackId=face.TrackId; _lastRender=-100; _layout.Reset(_trackId); _layoutReady=false; }
         if (_image!=null) { _image.enabled=true; _image.color=new Color(1,1,1,visibility); }
         // Shared matched landmarks/clock, capped at 20 geometry uploads a second.
         if (Time.unscaledTime-_lastRender<.05f) return;
@@ -54,17 +63,30 @@ public sealed class NarcissusFaceGrowth : IDisposable
             float denominator=Mathf.Max(.3f,Mathf.Abs(normal.z));
             float slopeX=-normal.x/denominator, slopeY=-normal.y/denominator;
             Vector2 center=face.Points[168];
+            // Plan the mature tangential layout once per track. This avoids
+            // nearest-candidate switches as buds open or the head moves.
+            if (!_layoutReady)
+            {
+                PrepareCrowns(face,rotation,width,center,slopeX,slopeY,100f);
+                _layout.Solve(_desired,_radii,rotation,width); _layoutReady=true;
+            }
+            PrepareCrowns(face,rotation,width,center,slopeX,slopeY,seconds);
+            _layout.Solve(_desired,_radii,rotation,width);
             for (int flower=0; flower<Anchors.Length; flower++)
             {
-                Vector2 p=face.Points[Anchors[flower]];
-                Vector3 root=new Vector3(p.x,p.y,(p.x-center.x)*slopeX+(p.y-center.y)*slopeY);
-                float variation=.94f+.09f*Mathf.Sin(flower*2.399f);
-                // Bloom radius ~12% of face width; overlapping corollas cover the central skin.
-                float scale=width*.12f*variation;
-                Quaternion twist=Quaternion.AngleAxis(flower*137.508f,Vector3.forward);
-                _model.Evaluate(seconds,Delay(flower),Time.unscaledTime*1.15f+flower*.7f,
-                    root,rotation*twist,scale,_vertices,flower*_model.VertexCount);
+                _model.Evaluate(seconds,_layout.Delays[flower],Time.unscaledTime*1.15f+flower*.7f,
+                    _roots[flower],_rotations[flower],width*_layout.Sizes[flower],_vertices,flower*_model.VertexCount,
+                    _layout.Centers[flower]-_baseCenters[flower]);
             }
+            BuildRoots(seconds,rotation,width);
+            // Include spaced crowns and drifting pollen in the cropped image.
+            for(int i=0;i<_vertices.Length;i++)
+            {
+                Vector3 v=_vertices[i];
+                bounds.xMin=Mathf.Min(bounds.xMin,v.x-width*.03f);bounds.xMax=Mathf.Max(bounds.xMax,v.x+width*.03f);
+                bounds.yMin=Mathf.Min(bounds.yMin,v.y-width*.03f);bounds.yMax=Mathf.Max(bounds.yMax,v.y+width*.03f);
+            }
+            BuildPollen(seconds,rotation,width,ref bounds);
             _mesh.vertices=_vertices;
             _mesh.RecalculateNormals();
             _mesh.bounds=new Bounds(new Vector3(bounds.center.x,bounds.center.y,0),new Vector3(bounds.width,bounds.height,width*12));
@@ -90,6 +112,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
             GL.Clear(true,true,Color.clear);
             if (!_material.SetPass(0)) throw new InvalidOperationException("Narcissus material pass is unavailable.");
             Graphics.DrawMeshNow(_mesh,Matrix4x4.identity);
+            if (_owner.showPollen && _material.SetPass(1)) Graphics.DrawMeshNow(_pollenMesh,Matrix4x4.identity);
             _image.texture=_target;
             Fit(bounds,skinLayer.uvRect,cameraWidth,cameraHeight);
             _image.color=new Color(1,1,1,visibility); _image.enabled=true;
@@ -102,6 +125,73 @@ public sealed class NarcissusFaceGrowth : IDisposable
             _failed=true;
         }
         finally { RenderTexture.active=previous; GL.sRGBWrite=previousSrgb; }
+    }
+
+    void PrepareCrowns(FacelessFaceRenderer face,Quaternion rotation,float width,Vector2 center,float slopeX,float slopeY,float seconds)
+    {
+        for(int i=0;i<Anchors.Length;i++)
+        {
+            Vector2 p=face.Points[Anchors[i]];
+            _roots[i]=new Vector3(p.x,p.y,(p.x-center.x)*slopeX+(p.y-center.y)*slopeY);
+            _rotations[i]=rotation*_layout.Rotations[i];
+            float scale=width*_layout.Sizes[i], delay=_layout.Delays[i];
+            float stem=NarcissusModel.Ease(seconds,delay,delay+6), bud=NarcissusModel.Ease(seconds,delay+2,delay+6);
+            _baseCenters[i]=_roots[i]+_rotations[i]*((NarcissusModel.FlowerBase*stem+new Vector3(0,0,.12f)*bud)*scale);
+            _desired[i]=_baseCenters[i]+rotation*(_layout.Jitter[i]*(width*stem));
+            _radii[i]=scale*1.13f*bud;
+        }
+    }
+    void BuildRoots(float seconds,Quaternion rotation,float width)
+    {
+        Vector3 normal=rotation*Vector3.forward,up=rotation*Vector3.up;
+        int first=_model.VertexCount*Anchors.Length;
+        for(int root=0;root<RootCount;root++)
+        {
+            int end=4+root*3;
+            Vector3 a=_roots[root%3]+normal*(width*.008f),c=_roots[end]+normal*(width*.008f);
+            Vector3 b=(a+c)*.5f+up*(Mathf.Sin(root*2.4f)*width*.05f)+normal*(width*.025f);
+            float growth=NarcissusModel.Ease(seconds,_layout.Delays[end]*.6f,_layout.Delays[end]*.6f+8);
+            for(int row=0;row<=RootSteps;row++)
+            {
+                float t=row/(float)RootSteps*growth;
+                Vector3 p=a*((1-t)*(1-t))+b*(2*(1-t)*t)+c*(t*t);
+                Vector3 tangent=(b-a)*(1-t)+(c-b)*t;
+                Vector3 sideAxis=Vector3.Cross(tangent,normal).normalized;
+                float radius=width*.0022f*growth*(1-.6f*t);
+                for(int side=0;side<RootSides;side++)
+                {
+                    float angle=side*Mathf.PI*2/RootSides;
+                    _vertices[first+root*(RootSteps+1)*RootSides+row*RootSides+side]=p+
+                        (sideAxis*Mathf.Cos(angle)+normal*Mathf.Sin(angle))*radius;
+                }
+            }
+        }
+    }
+    void BuildPollen(float seconds,Quaternion rotation,float width,ref Rect bounds)
+    {
+        for(int i=0;i<PollenCount;i++)
+        {
+            int plant=(i*7)%Anchors.Length;
+            float phase=Mathf.Repeat(Time.unscaledTime*.12f+NarcissusColonyLayout.Noise(_trackId,1200+i),1);
+            float alpha=Mathf.Sin(phase*Mathf.PI);
+            alpha*=alpha*.42f*NarcissusModel.Ease(seconds,_layout.Delays[plant]+5,_layout.Delays[plant]+8);
+            if(!_owner.showPollen)alpha=0;
+            Vector3 drift=new Vector3(Mathf.Sin(phase*5+i)*.07f,phase*.28f,.025f+phase*.11f);
+            Vector3 p=_layout.Centers[plant]+rotation*(drift*width);
+            float radius=width*Mathf.Lerp(.003f,.007f,NarcissusColonyLayout.Noise(_trackId,1300+i));
+            for(int corner=0;corner<4;corner++)
+            {
+                _pollenVertices[i*4+corner]=p+new Vector3((corner%2*2-1)*radius,(corner/2*2-1)*radius,0);
+                _pollenColors[i*4+corner]=new Color(.82f,.85f,.61f,alpha);
+            }
+            if(alpha>.001f)
+            {
+                bounds.xMin=Mathf.Min(bounds.xMin,p.x-radius);bounds.xMax=Mathf.Max(bounds.xMax,p.x+radius);
+                bounds.yMin=Mathf.Min(bounds.yMin,p.y-radius);bounds.yMax=Mathf.Max(bounds.yMax,p.y+radius);
+            }
+        }
+        _pollenMesh.vertices=_pollenVertices;_pollenMesh.colors=_pollenColors;
+        _pollenMesh.bounds=new Bounds(new Vector3(bounds.center.x,bounds.center.y,0),new Vector3(bounds.width,bounds.height,width*12));
     }
 
     void Fit(Rect bounds,Rect parentUV,int w,int h)
@@ -124,9 +214,9 @@ public sealed class NarcissusFaceGrowth : IDisposable
         }
         if (_mesh==null)
         {
-            int count=_model.VertexCount*Anchors.Length;
+            int count=_model.VertexCount*Anchors.Length+RootCount*(RootSteps+1)*RootSides;
             _vertices=new Vector3[count]; var uv=new Vector2[count]; var colors=new Color[count];
-            var indices=new int[_model.Triangles.Length*Anchors.Length];
+            var indices=new int[_model.Triangles.Length*Anchors.Length+RootCount*RootSteps*RootSides*6];
             for (int flower=0;flower<Anchors.Length;flower++)
             {
                 int first=flower*_model.VertexCount;
@@ -134,23 +224,57 @@ public sealed class NarcissusFaceGrowth : IDisposable
                 Array.Copy(_model.Colors,0,colors,first,_model.VertexCount);
                 for (int j=0;j<_model.Triangles.Length;j++) indices[flower*_model.Triangles.Length+j]=first+_model.Triangles[j];
             }
+            int rootFirst=_model.VertexCount*Anchors.Length, cursor=_model.Triangles.Length*Anchors.Length;
+            for(int root=0;root<RootCount;root++)
+            for(int row=0;row<=RootSteps;row++)
+            for(int side=0;side<RootSides;side++)
+            {
+                int v=rootFirst+root*(RootSteps+1)*RootSides+row*RootSides+side;
+                uv[v]=new Vector2(side/(float)RootSides,row/(float)RootSteps);
+                colors[v]=new Color(.105f,.18f,.065f,0);
+                if(row==RootSteps)continue;
+                int a=v,b=v+RootSides,c=v-side+(side+1)%RootSides,d=c+RootSides;
+                indices[cursor++]=a;indices[cursor++]=b;indices[cursor++]=c;
+                indices[cursor++]=b;indices[cursor++]=d;indices[cursor++]=c;
+            }
             _mesh=new Mesh {name="Narcissus living colony",hideFlags=HideFlags.HideAndDontSave};
             _mesh.MarkDynamic(); _mesh.vertices=_vertices; _mesh.uv=uv; _mesh.colors=colors; _mesh.triangles=indices;
+        }
+        if (_pollenMesh==null)
+        {
+            _pollenVertices=new Vector3[PollenCount*4];_pollenColors=new Color[PollenCount*4];
+            var puv=new Vector2[PollenCount*4];var normals=new Vector3[PollenCount*4];var triangles=new int[PollenCount*6];
+            for(int p=0;p<PollenCount;p++)
+            {
+                int v=p*4,j=p*6;
+                puv[v]=new Vector2(0,0);puv[v+1]=new Vector2(1,0);puv[v+2]=new Vector2(0,1);puv[v+3]=new Vector2(1,1);
+                for(int n=0;n<4;n++)normals[v+n]=Vector3.forward;
+                triangles[j]=v;triangles[j+1]=v+1;triangles[j+2]=v+2;
+                triangles[j+3]=v+1;triangles[j+4]=v+3;triangles[j+5]=v+2;
+            }
+            _pollenMesh=new Mesh{name="Narcissus pollen",hideFlags=HideFlags.HideAndDontSave};_pollenMesh.MarkDynamic();
+            _pollenMesh.vertices=_pollenVertices;_pollenMesh.uv=puv;_pollenMesh.normals=normals;_pollenMesh.colors=_pollenColors;_pollenMesh.triangles=triangles;
+        }
+        if (_displayMaterial==null)
+        {
+            var shader=Resources.Load<Shader>("FacelessNarcissusDisplay");
+            if(shader==null || !shader.isSupported)throw new InvalidOperationException("Missing narcissus display shader.");
+            _displayMaterial=new Material(shader){hideFlags=HideFlags.HideAndDontSave};
         }
         if (_image==null)
         {
             var go=new GameObject("Narcissus growth",typeof(RectTransform),typeof(CanvasRenderer),typeof(RawImage));
             go.hideFlags=HideFlags.DontSave; go.layer=parent.gameObject.layer;
             go.transform.SetParent(parent.transform,false);
-            _image=go.GetComponent<RawImage>(); _image.raycastTarget=false;
+            _image=go.GetComponent<RawImage>(); _image.raycastTarget=false; _image.material=_displayMaterial;
         }
     }
     public void Dispose()
     {
         if (_image!=null) { _image.enabled=false; Release(_image.gameObject); }
         if (_target!=null) { _target.Release(); Release(_target); }
-        Release(_mesh); Release(_material);
-        _image=null; _target=null; _mesh=null; _material=null; _vertices=null;
+        Release(_mesh); Release(_material); Release(_displayMaterial); Release(_pollenMesh);
+        _image=null; _target=null; _mesh=null; _material=null; _vertices=null; _pollenMesh=null; _displayMaterial=null;
     }
     static void Release(UnityEngine.Object value)
     { if (value==null) return; if (Application.isPlaying) UnityEngine.Object.Destroy(value); else UnityEngine.Object.DestroyImmediate(value); }

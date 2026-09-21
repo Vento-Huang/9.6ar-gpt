@@ -1,4 +1,4 @@
-// Compile with the actual NarcissusModel.cs. Math stubs are independent of Unity.
+// Compile with the actual NarcissusModel.cs and NarcissusColonyLayout.cs. Math stubs are independent of Unity.
 // Exports the actual evaluated mesh, not a separately generated approximation.
 using System;
 using System.IO;
@@ -6,6 +6,7 @@ using System.Linq;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using UnityEngine;
 static class NarcissusChecks
 {
@@ -14,7 +15,7 @@ static class NarcissusChecks
     static void Main()
     {
         var model=new NarcissusModel(); var vertices=new Vector3[model.VertexCount];
-        Check(model.VertexCount*38<65535,"colony exceeds 16-bit mesh indices");
+        Check(model.VertexCount*38+12*13*6<65535,"colony exceeds 16-bit mesh indices");
         Check(model.Triangles.All(i=>i>=0&&i<model.VertexCount),"invalid topology");
         model.Evaluate(0,0,0,Vector3.zero,Quaternion.identity,1,vertices,0);
         Check(vertices.All(p=>p.magnitude<1e-7),"birth must start at root");
@@ -35,6 +36,59 @@ static class NarcissusChecks
             if(Vector3.Cross(b-a,c-a).magnitude>1e-8) nondegenerate++;
         }
         Check(nondegenerate==model.Triangles.Length/3,"degenerate mature geometry");
+        var anchorText=File.ReadAllText("Assets/MediaPipeUnity/Samples/Scenes/Face Landmark Detection/NarcissusFaceGrowth.cs").Split(new[]{"Anchors={"},StringSplitOptions.None)[1].Split(new[]{"};"},StringSplitOptions.None)[0];
+        var anchors=Regex.Matches(anchorText,@"\d+").Cast<Match>().Select(m=>int.Parse(m.Value)).ToArray();
+        Check(anchors.Length==NarcissusColonyLayout.Count,"layout and anchors disagree");
+        var canonical=File.ReadAllLines(Environment.GetEnvironmentVariable("NARCISSUS_CANONICAL"))
+            .Where(l=>l.StartsWith("v ")).Select(l=>l.Split(new[]{' '},StringSplitOptions.RemoveEmptyEntries).Skip(1)
+            .Select(x=>float.Parse(x,CultureInfo.InvariantCulture)).ToArray()).Select(v=>new Vector3(v[0],v[1],0)).ToArray();
+        Vector3 midpoint=new Vector3(canonical.Average(v=>v.x),canonical.Average(v=>v.y),0);
+        float width=canonical.Max(v=>v.x)-canonical.Min(v=>v.x);
+        var roots=anchors.Select(i=>canonical[i]-midpoint).ToArray();
+        var colony=new NarcissusColonyLayout();var desired=new Vector3[38];var radii=new float[38];
+        float minimumMargin=float.PositiveInfinity;
+        foreach(int seed in new[]{1,7,19,103})
+        foreach(float yaw in new[]{-80f,-45f,0f,45f,80f})
+        {
+            colony.Reset(seed);var rotation=Quaternion.Euler(12,yaw,9);
+            Check(colony.Sizes.Max()/colony.Sizes.Min()>2,"insufficient size variation");
+            Check(colony.Delays.Max()==11 && colony.Delays.Min()>=0,"21-second schedule changed");
+            for(int i=0;i<38;i++)
+            {
+                desired[i]=rotation*(roots[i]+colony.Rotations[i]*((NarcissusModel.FlowerBase+new Vector3(0,0,.12f))*(width*colony.Sizes[i]))+colony.Jitter[i]*width);
+                radii[i]=width*colony.Sizes[i]*1.13f;
+            }
+            colony.Solve(desired,radii,rotation,width);
+            colony.Solve(desired,radii,rotation,width);
+            for(int i=0;i<38;i++)for(int j=0;j<i;j++)
+            {
+                float margin=(colony.Centers[i]-colony.Centers[j]).magnitude-radii[i]-radii[j];
+                minimumMargin=Math.Min(minimumMargin,margin);Check(margin>=-.00001f,"crown envelope intersection");
+            }
+            var previous=colony.Centers.ToArray();colony.Solve(desired,radii,rotation,width);
+            Check(previous.Zip(colony.Centers,(x,y)=>(x-y).magnitude).Max()<.00001f,"stationary layout jitter");
+        }
+        colony.Reset(19);
+        var snapshots=new System.Collections.Generic.Dictionary<string,float[][]>();
+        var colonyVertices=new Vector3[model.VertexCount*38];
+        foreach(float seconds in new[]{100f,7f,14f,21f})
+        {
+            for(int i=0;i<38;i++)
+            {
+                float d=colony.Delays[i],stem=NarcissusModel.Ease(seconds,d,d+6),bud=NarcissusModel.Ease(seconds,d+2,d+6);
+                desired[i]=roots[i]+colony.Rotations[i]*((NarcissusModel.FlowerBase*stem+new Vector3(0,0,.12f)*bud)*(width*colony.Sizes[i]))+colony.Jitter[i]*(width*stem);
+                radii[i]=width*colony.Sizes[i]*1.13f*bud;
+            }
+            colony.Solve(desired,radii,Quaternion.identity,width);
+            for(int i=0;i<38;i++)
+            {
+                float d=colony.Delays[i],stem=NarcissusModel.Ease(seconds,d,d+6);
+                Vector3 baseCenter=desired[i]-colony.Jitter[i]*(width*stem);
+                model.Evaluate(seconds,d,0,roots[i],colony.Rotations[i],width*colony.Sizes[i],colonyVertices,i*model.VertexCount,colony.Centers[i]-baseCenter);
+            }
+            snapshots[seconds.ToString(CultureInfo.InvariantCulture)]=colonyVertices.Select(XYZ).ToArray();
+        }
+        Console.WriteLine("PASS: 20 seeded/rotated crown layouts, stationary stability, variable scales and schedule; minimum crown gap="+minimumMargin);
         string destination=Environment.GetEnvironmentVariable("NARCISSUS_OUTPUT");
         if(!string.IsNullOrEmpty(destination))
         {
@@ -56,7 +110,7 @@ static class NarcissusChecks
             if(!string.IsNullOrEmpty(preview)) File.WriteAllText(preview,JsonSerializer.Serialize(new {
                 open=model.Open.Select(XYZ),closed=model.Closed.Select(XYZ),parts=model.Parts,triangles=model.Triangles,
                 uv=model.UV.Select(p=>new[]{p.x,p.y}),colors=model.Colors.Select(c=>new[]{c.r,c.g,c.b,c.a}),frames=frames,
-                mature=vertices.Select(XYZ)}));
+                mature=vertices.Select(XYZ),colonies=snapshots,roots=roots.Select(XYZ),sizes=colony.Sizes,delays=colony.Delays}));
         }
         Console.WriteLine($"PASS: {model.VertexCount} vertices / {nondegenerate} triangles; root birth, finite stages, 21-second completion, 38-flower index budget; actual mesh exported.");
     }
@@ -65,11 +119,17 @@ namespace UnityEngine
 {
     public struct Vector2 {public float x,y;public Vector2(float x,float y){this.x=x;this.y=y;}}
     public struct Color {public float r,g,b,a;public Color(float r,float g,float b,float a){this.r=r;this.g=g;this.b=b;this.a=a;}}
-    public struct Quaternion {public static Quaternion identity=>default;public static Vector3 operator*(Quaternion q,Vector3 p)=>p;}
+    public struct Quaternion {
+        System.Numerics.Quaternion q;
+        public static Quaternion identity=>new Quaternion{q=System.Numerics.Quaternion.Identity};
+        public static Quaternion Euler(float x,float y,float z)=>new Quaternion{q=System.Numerics.Quaternion.CreateFromYawPitchRoll(y*Mathf.PI/180,x*Mathf.PI/180,z*Mathf.PI/180)};
+        public static Quaternion Inverse(Quaternion a)=>new Quaternion{q=System.Numerics.Quaternion.Inverse(a.q)};
+        public static Vector3 operator*(Quaternion a,Vector3 p){var v=System.Numerics.Vector3.Transform(new System.Numerics.Vector3(p.x,p.y,p.z),a.q);return new Vector3(v.X,v.Y,v.Z);}
+    }
     public struct Vector3
     {
         public float x,y,z;public Vector3(float x,float y,float z){this.x=x;this.y=y;this.z=z;}
-        public static Vector3 zero=>new Vector3(0,0,0);public float magnitude=>(float)Math.Sqrt(x*x+y*y+z*z);
+        public static Vector3 zero=>new Vector3(0,0,0);public static Vector3 right=>new Vector3(1,0,0);public static Vector3 up=>new Vector3(0,1,0);public static Vector3 forward=>new Vector3(0,0,1);public float sqrMagnitude=>x*x+y*y+z*z;public static float Dot(Vector3 a,Vector3 b)=>a.x*b.x+a.y*b.y+a.z*b.z;public static Vector3 operator/(Vector3 a,float b)=>a*(1/b);public float magnitude=>(float)Math.Sqrt(x*x+y*y+z*z);
         public static Vector3 operator+(Vector3 a,Vector3 b)=>new Vector3(a.x+b.x,a.y+b.y,a.z+b.z);
         public static Vector3 operator-(Vector3 a,Vector3 b)=>new Vector3(a.x-b.x,a.y-b.y,a.z-b.z);
         public static Vector3 operator*(Vector3 a,float b)=>new Vector3(a.x*b,a.y*b,a.z*b);
@@ -79,7 +139,7 @@ namespace UnityEngine
     public static class Mathf
     {
         public const float PI=(float)Math.PI;
-        public static float Sin(float x)=>(float)Math.Sin(x);public static float Cos(float x)=>(float)Math.Cos(x);
+        public static float Sqrt(float x)=>(float)Math.Sqrt(x);public static float Sin(float x)=>(float)Math.Sin(x);public static float Cos(float x)=>(float)Math.Cos(x);
         public static float Pow(float x,float y)=>(float)Math.Pow(x,y);public static float Abs(float x)=>Math.Abs(x);
         public static float Max(float x,float y)=>Math.Max(x,y);public static float Clamp01(float x)=>Math.Max(0,Math.Min(1,x));
         public static float Lerp(float a,float b,float t)=>a+(b-a)*Clamp01(t);

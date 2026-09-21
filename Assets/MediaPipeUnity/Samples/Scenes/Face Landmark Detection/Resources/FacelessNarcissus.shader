@@ -48,6 +48,41 @@ Shader "Hidden/Faceless/Narcissus"
             }
             ENDCG
         }
+        Pass
+        {
+            Cull Off ZWrite Off ZTest LEqual Blend One OneMinusSrcAlpha
+            CGPROGRAM
+            #pragma target 3.0
+            #pragma vertex vert
+            #pragma fragment fragPollen
+            #include "UnityCG.cginc"
+            float4 _PlantBounds;
+            float _DepthScale;
+            struct appdata { float4 vertex:POSITION; float3 normal:NORMAL; float4 color:COLOR; float2 uv:TEXCOORD0; };
+            struct v2f { float4 position:SV_POSITION; float3 normal:TEXCOORD0; float4 color:COLOR; float2 uv:TEXCOORD1; };
+            v2f vert(appdata v)
+            {
+                v2f o;
+                float2 p=(v.vertex.xy-_PlantBounds.xy)/_PlantBounds.zw*2-1;
+                #if UNITY_UV_STARTS_AT_TOP
+                    p.y=-p.y;
+                #endif
+                float depth=saturate(.5-v.vertex.z/_DepthScale);
+                #if defined(UNITY_REVERSED_Z)
+                    depth=1-depth;
+                #else
+                    depth=lerp(UNITY_NEAR_CLIP_VALUE,1.0,depth);
+                #endif
+                o.position=float4(p,depth,1); o.normal=v.normal; o.color=v.color; o.uv=v.uv; return o;
+            }
+            float4 fragPollen(v2f i):SV_Target
+            {
+                float radial=length(i.uv*2-1);
+                float opacity=exp(-5*radial*radial)*(1-smoothstep(.6,1,radial))*i.color.a;
+                return float4(i.color.rgb*opacity,opacity);
+            }
+            ENDCG
+        }
     }
     Fallback Off
 }

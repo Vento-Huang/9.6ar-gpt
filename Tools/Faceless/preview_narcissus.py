@@ -21,7 +21,7 @@ fragment='#version 330\n#define saturate(x) clamp(x,0.0,1.0)\nstruct v2f{vec3 no
 vertex='''#version 330
 in vec3 P;in vec3 normal;in vec4 color;in vec2 uv;
 out vec3 N;out vec4 C;out vec2 U;uniform vec4 bounds;
-void main(){gl_Position=vec4((P.xy-bounds.xy)/bounds.zw*2.-1.,-P.z/10.,1.);N=normal;C=color;U=uv;}
+void main(){gl_Position=vec4((P.xy-bounds.xy)/bounds.zw*2.-1.,-P.z/30.,1.);N=normal;C=color;U=uv;}
 '''
 program=ctx.program(vertex_shader=vertex,fragment_shader=fragment)
 # Compile the actual projection body for both UV/depth branches too. This is
@@ -73,18 +73,8 @@ opened=np.array(data['open']);closed=np.array(data['closed'])
 def ease(t,a,b):
     t=np.clip((t-a)/(b-a),0,1);return t*t*(3-2*t)
 def colony(seconds):
-    positions=[]
-    for k,anchor in enumerate(anchors):
-        delay=k*.7 if k<5 else 3+8*(k-5)/(len(anchors)-6)
-        stem=ease(seconds,delay,delay+6);leaf=ease(seconds,delay+1,delay+8)
-        bud=ease(seconds,delay+2,delay+6);bloom=ease(seconds,delay+4,delay+10)
-        p=opened*stem
-        p[parts==1]=(closed[parts==1]*(1-leaf)+opened[parts==1]*leaf)*stem
-        p[parts>=2]=np.array([0,.25,1.2])*stem+(closed[parts>=2]*(1-bloom)+opened[parts>=2]*bloom)*bud
-        a=np.deg2rad(k*137.508);rotation=np.array([[np.cos(a),-np.sin(a),0],[np.sin(a),np.cos(a),0],[0,0,1]])
-        location=canonical[anchor].copy();location[2]=0
-        positions.append((p@rotation.T)*(scale*(.94+.09*np.sin(k*2.399)))+location)
-    p=np.concatenate(positions);tri=np.concatenate([indices+k*len(points) for k in range(len(anchors))])
+    p=np.array(data['colonies'][str(seconds)])
+    tri=np.concatenate([indices+k*len(points) for k in range(len(anchors))])
     return render(p,tri,np.tile(colors,(len(anchors),1)),np.tile(uv,(len(anchors),1)),[-9,-11,18,22],(360,440))
 
 board=Image.new('RGB',(1440,840),(11,13,12));board.paste(single,(0,75))
@@ -92,7 +82,7 @@ draw=ImageDraw.Draw(board)
 try:font=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',20)
 except OSError:font=ImageFont.load_default()
 draw.text((30,25),'NARCISSUS  /  ORIGINAL 3D MODEL',font=font,fill=(225,225,212))
-draw.text((740,25),'GROWTH AFTER THE FACE TRANSITION',font=font,fill=(225,225,212))
+draw.text((740,25),'VARIED SIZES / SPACED FLOWER CROWNS',font=font,fill=(225,225,212))
 for column,seconds in enumerate([7,21]):
     board.paste(colony(seconds),(720+column*360,150))
     draw.text((750+column*360,615),f'{seconds:02d} SECONDS',font=font,fill=(225,225,212))

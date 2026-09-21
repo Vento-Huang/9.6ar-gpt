@@ -123,7 +123,7 @@ public sealed class NarcissusModel
     /// <summary>Latest delay is 11 seconds, so every flower completes exactly by 21.
     /// All vertices collapse to their root at/before their scheduled birth.</summary>
     public void Evaluate(float seconds,float delay,float breathingPhase,Vector3 root,
-        Quaternion rotation,float scale,Vector3[] output,int offset)
+        Quaternion rotation,float scale,Vector3[] output,int offset,Vector3 headOffset=default)
     {
         float stem=Ease(seconds,delay,delay+6);
         float leaves=Ease(seconds,delay+1,delay+8);
@@ -136,7 +136,9 @@ public sealed class NarcissusModel
             if (Parts[i]==0) p=Open[i]*stem;
             else if (Parts[i]==1) p=Vector3.Lerp(Closed[i],Open[i],leaves)*stem;
             else p=FlowerBase*stem+Vector3.Lerp(Closed[i],Open[i],bloom)*(bud*breath);
-            output[offset+i]=root+rotation*(p*scale);
+            // Bend the stem continuously toward its spaced crown; roots remain attached.
+            float bend=Parts[i]==0?UV[i].y*UV[i].y:Parts[i]==1?UV[i].x*.08f:1f;
+            output[offset+i]=root+rotation*(p*scale)+headOffset*bend;
         }
     }
 }

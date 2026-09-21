@@ -47,6 +47,7 @@ public class MidFaceEraseMask : MonoBehaviour
 
     [Header("Narcissus / 水仙生长")]
     public bool growNarcissus = true;
+    public bool showPollen = true;
     [Tooltip("Growth begins after the two-second skin entry. Each viewer has an independent clock.")]
     [Min(0.1f)] public float growthDurationSeconds = 21f;
 
@@ -430,7 +431,7 @@ public class MidFaceEraseMask : MonoBehaviour
         if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.R)
         { ReplayEntry(); Event.current.Use(); }
         if (!showControls) return;
-        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 320), DrawControls, "Faceless / 6 faces");
+        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 344), DrawControls, "Faceless / 6 faces");
     }
     void DrawControls(int id)
     {
@@ -442,6 +443,7 @@ public class MidFaceEraseMask : MonoBehaviour
         showLandmarks = GUILayout.Toggle(showLandmarks, "468 landmarks / face");
         showMask = GUILayout.Toggle(showMask, "Regions + boundary");
         growNarcissus = GUILayout.Toggle(growNarcissus, "Narcissus / 21 s growth");
+        showPollen = GUILayout.Toggle(showPollen, "Floating pollen");
         GUILayout.Label("Growth / " + (GrowthProgress * 100f).ToString("0") + "%");
         if (GUILayout.Button("Final skin")) ShowFinalSkin();
         if (GUILayout.Button("Replay all entries (R)")) ReplayEntry();
