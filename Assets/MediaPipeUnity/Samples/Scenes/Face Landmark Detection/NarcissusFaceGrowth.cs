@@ -23,7 +23,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
     Mesh _pollenMesh;
     Vector3[] _pollenVertices;
     Color[] _pollenColors;
-    const int RootCount=12, RootSteps=12, RootSides=6, PollenCount=24;
+    const int RootCount=12, RootSteps=12, RootSides=6, PollenCount=40;
     readonly NarcissusColonyLayout _layout=new NarcissusColonyLayout();
     readonly Vector3[] _roots=new Vector3[38], _desired=new Vector3[38], _baseCenters=new Vector3[38];
     readonly Quaternion[] _rotations=new Quaternion[38];

@@ -60,7 +60,7 @@ Shader "Hidden/Faceless/Narcissus"
                 float3 c=i.color.rgb*(.65+.35*diffuse+veins+translucence);
                 c*=1-cup*.14*(1-i.uv.y);
                 c+=specular*lerp(.055,.12,petal);
-                return float4(saturate(c*_FlowerBrightness),1);
+                return float4(saturate(c*_FlowerBrightness*.88),1);
             }
             ENDCG
         }
