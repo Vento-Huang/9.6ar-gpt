@@ -28,7 +28,15 @@ public sealed class NarcissusFaceGrowth : IDisposable
     readonly Vector3[] _roots=new Vector3[38], _desired=new Vector3[38], _baseCenters=new Vector3[38];
     readonly Quaternion[] _rotations=new Quaternion[38];
     readonly float[] _radii=new float[38];
-    bool _layoutReady;
+    bool _layoutReady, _trackingReady;
+    readonly Vector2[] _stablePoints=new Vector2[468];
+    Quaternion _stableRotation;
+    float _stableWidth;
+    readonly Vector3[] _previousRoots=new Vector3[38],_sway=new Vector3[38],_swayVelocity=new Vector3[38];
+    readonly Transform[] _rootBones=new Transform[38],_midBones=new Transform[38],_tipBones=new Transform[38];
+    GameObject _rigObject;
+    Vector3 _previousNormal;
+    const float FlowerScale=1.35f;
     RenderTexture _target;
     Vector3[] _vertices;
     float _lastRender=-100;
@@ -40,29 +48,31 @@ public sealed class NarcissusFaceGrowth : IDisposable
     {
         if (face==null || !face.Ready || !face.IsTracking || skinLayer==null || !skinLayer.enabled ||
             !_owner.growNarcissus || !_owner.playEntryAnimation)
-        { if (_image!=null) _image.enabled=false; return; }
+        { if (_image!=null) _image.enabled=false; _trackingReady=false; return; }
         float seconds=Mathf.Max(0,face.PresentationSeconds-Mathf.Max(.1f,_owner.entryDurationSeconds));
         seconds=seconds*21f/Mathf.Max(.1f,_owner.growthDurationSeconds);
-        if (seconds<=0) { if (_image!=null) _image.enabled=false; return; }
-        if (_trackId!=face.TrackId) { _trackId=face.TrackId; _lastRender=-100; _layout.Reset(_trackId); _layoutReady=false; }
+        if (seconds<=0) { if (_image!=null) _image.enabled=false; _trackingReady=false; return; }
+        if (_trackId!=face.TrackId) { _trackId=face.TrackId; _lastRender=-100; _layout.Reset(_trackId); _layoutReady=false; _trackingReady=false; }
         if (_image!=null) { _image.enabled=true; _image.color=new Color(1,1,1,visibility); }
         // Shared matched landmarks/clock, capped at 20 geometry uploads a second.
         if (Time.unscaledTime-_lastRender<.05f) return;
+        float dt=Mathf.Min(.1f,Mathf.Max(.001f,Time.unscaledTime-_lastRender));
         _lastRender=Time.unscaledTime;
         RenderTexture previous=RenderTexture.active;
         bool previousSrgb=GL.sRGBWrite;
         try
         {
             EnsureResources(skinLayer);
-            float width=face.Regions.Width;
+            SmoothTracking(face,dt);
+            float width=_stableWidth;
             Rect bounds=face.Regions.Bounds;
             bounds.xMin-=width*.19f; bounds.xMax+=width*.19f;
             bounds.yMin-=width*.19f; bounds.yMax+=width*.19f;
-            Quaternion rotation=face.HasPose?face.HeadPose.rotation:Quaternion.identity;
+            Quaternion rotation=_stableRotation;
             Vector3 normal=rotation*Vector3.forward;
             float denominator=Mathf.Max(.3f,Mathf.Abs(normal.z));
             float slopeX=-normal.x/denominator, slopeY=-normal.y/denominator;
-            Vector2 center=face.Points[168];
+            Vector2 center=_stablePoints[168];
             // Plan the mature tangential layout once per track. This avoids
             // nearest-candidate switches as buds open or the head moves.
             if (!_layoutReady)
@@ -72,11 +82,13 @@ public sealed class NarcissusFaceGrowth : IDisposable
             }
             PrepareCrowns(face,rotation,width,center,slopeX,slopeY,seconds);
             _layout.Solve(_desired,_radii,rotation,width);
+            UpdateRigMotion(rotation,width,dt);
             for (int flower=0; flower<Anchors.Length; flower++)
             {
-                _model.Evaluate(seconds,_layout.Delays[flower],Time.unscaledTime*1.15f+flower*.7f,
-                    _roots[flower],_rotations[flower],width*_layout.Sizes[flower]*1.15f,_vertices,flower*_model.VertexCount,
-                    _layout.Centers[flower]-_baseCenters[flower],true);
+                _model.Evaluate(seconds,_layout.Delays[flower],0f,
+                    _roots[flower],_rotations[flower],width*_layout.Sizes[flower]*FlowerScale,_vertices,flower*_model.VertexCount,
+                    _layout.Centers[flower]-_baseCenters[flower],true,_sway[flower]*NarcissusModel.Ease(seconds,_layout.Delays[flower],_layout.Delays[flower]+6));
+                UpdateBoneNodes(flower,seconds,width);
             }
             BuildRoots(seconds,rotation,width);
             // Include spaced crowns and drifting pollen in the cropped image.
@@ -127,14 +139,86 @@ public sealed class NarcissusFaceGrowth : IDisposable
         finally { RenderTexture.active=previous; GL.sRGBWrite=previousSrgb; }
     }
 
+    void SmoothTracking(FacelessFaceRenderer face,float dt)
+    {
+        float width=Mathf.Max(1,face.Regions.Width);
+        Quaternion pose=face.HasPose?face.HeadPose.rotation:Quaternion.identity;
+        bool first=!_trackingReady;
+        if(first) { _stableWidth=width;_stableRotation=pose; }
+        float widthDelta=width-_stableWidth;
+        if(Mathf.Abs(widthDelta)>width*.003f)
+            _stableWidth+=widthDelta*(1-(float)Math.Exp(-12*dt));
+        float angle=Quaternion.Angle(_stableRotation,pose);
+        if(angle>.5f) _stableRotation=Quaternion.Slerp(_stableRotation,pose,1-(float)Math.Exp(-(angle>5?22:9)*dt));
+        for(int i=0;i<_stablePoints.Length;i++)
+        {
+            Vector2 raw=face.Points[i];
+            if(first) { _stablePoints[i]=raw;continue; }
+            Vector2 delta=raw-_stablePoints[i];
+            float distance=delta.magnitude,dead=width*.0025f;
+            if(distance>dead)
+                _stablePoints[i]+=delta*((1-dead/distance)*(1-(float)Math.Exp(-(distance>width*.025f?28:12)*dt)));
+        }
+        if(first)
+        {
+            Array.Clear(_sway,0,_sway.Length);Array.Clear(_swayVelocity,0,_swayVelocity.Length);
+            _previousNormal=_stableRotation*Vector3.forward;
+        }
+        // Root history is initialized by UpdateRigMotion after PrepareCrowns.
+    }
+    void UpdateRigMotion(Quaternion rotation,float width,float dt)
+    {
+        Vector3 normal=rotation*Vector3.forward;
+        Vector3 turn=normal-_previousNormal;
+        for(int i=0;i<38;i++)
+        {
+            Vector3 movement=_trackingReady?(_roots[i]-_previousRoots[i])/width+turn*.16f:Vector3.zero;
+            if(movement.magnitude>.004f)
+                _swayVelocity[i]-=Vector3.ClampMagnitude(movement,.06f)*(width*2.2f);
+            // Small fixed substeps keep spring damping stable at variable frame rates.
+            int steps=Mathf.Max(1,Mathf.CeilToInt(dt/.01f));float h=dt/steps;
+            for(int step=0;step<steps;step++)
+            {
+                _swayVelocity[i]+=(-_sway[i]*95f-_swayVelocity[i]*17f)*h;
+                _sway[i]+=_swayVelocity[i]*h;
+                _sway[i]=Vector3.ClampMagnitude(_sway[i],width*.012f);
+            }
+            if(_sway[i].magnitude<width*.00005f && _swayVelocity[i].magnitude<width*.0002f)
+            { _sway[i]=Vector3.zero;_swayVelocity[i]=Vector3.zero; }
+            _previousRoots[i]=_roots[i];
+        }
+        _previousNormal=normal;_trackingReady=true;
+    }
+    void UpdateBoneNodes(int i,float seconds,float width)
+    {
+        if(_rigObject==null)
+        {
+            _rigObject=new GameObject("Narcissus joints (camera pixel space)");
+            _rigObject.hideFlags=HideFlags.DontSave;_rigObject.transform.SetParent(_owner.transform,false);
+            for(int n=0;n<38;n++)
+            {
+                _rootBones[n]=new GameObject("Flower "+n+" Root").transform;_rootBones[n].SetParent(_rigObject.transform,false);
+                _midBones[n]=new GameObject("Stem joint").transform;_midBones[n].SetParent(_rootBones[n],false);
+                _tipBones[n]=new GameObject("Flower joint").transform;_tipBones[n].SetParent(_midBones[n],false);
+            }
+        }
+        float growth=NarcissusModel.Ease(seconds,_layout.Delays[i],_layout.Delays[i]+6);
+        Vector3 baseTip=_rotations[i]*(NarcissusModel.AttachedBase*(width*_layout.Sizes[i]*FlowerScale*growth));
+        Vector3 bend=_layout.Centers[i]-_baseCenters[i],motion=_sway[i]*growth;
+        Vector3 middle=baseTip*.5f+bend*.25f+motion*.35f;
+        _rootBones[i].localPosition=_roots[i];
+        _midBones[i].localPosition=middle;
+        _tipBones[i].localPosition=baseTip+bend+motion-middle;
+    }
+
     void PrepareCrowns(FacelessFaceRenderer face,Quaternion rotation,float width,Vector2 center,float slopeX,float slopeY,float seconds)
     {
         for(int i=0;i<Anchors.Length;i++)
         {
-            Vector2 p=face.Points[Anchors[i]];
+            Vector2 p=_stablePoints[Anchors[i]];
             _roots[i]=new Vector3(p.x,p.y,(p.x-center.x)*slopeX+(p.y-center.y)*slopeY);
             _rotations[i]=rotation*_layout.Rotations[i];
-            float scale=width*_layout.Sizes[i]*1.15f, delay=_layout.Delays[i];
+            float scale=width*_layout.Sizes[i]*FlowerScale, delay=_layout.Delays[i];
             float stem=NarcissusModel.Ease(seconds,delay,delay+6), bud=NarcissusModel.Ease(seconds,delay+2,delay+6);
             _baseCenters[i]=_roots[i]+_rotations[i]*((NarcissusModel.AttachedBase*stem+new Vector3(0,0,.12f)*bud)*scale);
             _desired[i]=_baseCenters[i]+rotation*(_layout.Jitter[i]*(width*stem));
@@ -273,6 +357,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
     {
         if (_image!=null) { _image.enabled=false; Release(_image.gameObject); }
         if (_target!=null) { _target.Release(); Release(_target); }
+        Release(_rigObject);_rigObject=null;
         Release(_mesh); Release(_material); Release(_displayMaterial); Release(_pollenMesh);
         _image=null; _target=null; _mesh=null; _material=null; _vertices=null; _pollenMesh=null; _displayMaterial=null;
     }

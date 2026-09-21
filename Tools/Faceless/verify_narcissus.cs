@@ -55,8 +55,8 @@ static class NarcissusChecks
             Check(colony.Delays.Max()==11 && colony.Delays.Min()>=0,"21-second schedule changed");
             for(int i=0;i<38;i++)
             {
-                desired[i]=rotation*(roots[i]+colony.Rotations[i]*((NarcissusModel.AttachedBase+new Vector3(0,0,.12f))*(width*colony.Sizes[i]*1.15f))+colony.Jitter[i]*width);
-                radii[i]=width*colony.Sizes[i]*1.15f*1.13f;
+                desired[i]=rotation*(roots[i]+colony.Rotations[i]*((NarcissusModel.AttachedBase+new Vector3(0,0,.12f))*(width*colony.Sizes[i]*1.35f))+colony.Jitter[i]*width);
+                radii[i]=width*colony.Sizes[i]*1.35f*1.13f;
             }
             colony.Solve(desired,radii,rotation,width);
             colony.Solve(desired,radii,rotation,width);
@@ -81,15 +81,15 @@ static class NarcissusChecks
             for(int i=0;i<38;i++)
             {
                 float d=colony.Delays[i],stem=NarcissusModel.Ease(seconds,d,d+6),bud=NarcissusModel.Ease(seconds,d+2,d+6);
-                desired[i]=roots[i]+colony.Rotations[i]*((NarcissusModel.AttachedBase*stem+new Vector3(0,0,.12f)*bud)*(width*colony.Sizes[i]*1.15f))+colony.Jitter[i]*(width*stem);
-                radii[i]=width*colony.Sizes[i]*1.15f*1.13f*bud;
+                desired[i]=roots[i]+colony.Rotations[i]*((NarcissusModel.AttachedBase*stem+new Vector3(0,0,.12f)*bud)*(width*colony.Sizes[i]*1.35f))+colony.Jitter[i]*(width*stem);
+                radii[i]=width*colony.Sizes[i]*1.35f*1.13f*bud;
             }
             colony.Solve(desired,radii,Quaternion.identity,width);
             for(int i=0;i<38;i++)
             {
                 float d=colony.Delays[i],stem=NarcissusModel.Ease(seconds,d,d+6);
                 Vector3 baseCenter=desired[i]-colony.Jitter[i]*(width*stem);
-                model.Evaluate(seconds,d,0,roots[i],colony.Rotations[i],width*colony.Sizes[i]*1.15f,colonyVertices,i*model.VertexCount,colony.Centers[i]-baseCenter,true);
+                model.Evaluate(seconds,d,0,roots[i],colony.Rotations[i],width*colony.Sizes[i]*1.35f,colonyVertices,i*model.VertexCount,colony.Centers[i]-baseCenter,true);
             }
             snapshots[seconds.ToString(CultureInfo.InvariantCulture)]=colonyVertices.Select(XYZ).ToArray();
         }
@@ -101,6 +101,15 @@ static class NarcissusChecks
             if(model.Parts[i]>=2)
                 Check((attached[i]-vertices[i]-new Vector3(0,0,NarcissusModel.AttachedBase.z-NarcissusModel.FlowerBase.z)).magnitude<.00001f,"flower shape changed");
         Console.WriteLine("PASS: attached stem <=0.19 model units; mature flower geometry preserved by translation.");
+        var swayed=new Vector3[model.VertexCount];
+        Vector3 swayTest=new Vector3(.02f,-.01f,0);
+        model.Evaluate(21,0,0,Vector3.zero,Quaternion.identity,1,swayed,0,Vector3.zero,true,swayTest);
+        for(int i=0;i<model.VertexCount;i++)
+        {
+            if(model.Parts[i]>=2) Check((swayed[i]-attached[i]-swayTest).magnitude<.00001f,"flower joint translation broken");
+            if(model.Parts[i]==0 && model.UV[i].y==0) Check((swayed[i]-attached[i]).magnitude<.00001f,"root joint moved");
+        }
+        Console.WriteLine("PASS: joint deformation preserves pinned roots and rigid flower crowns.");
         string destination=Environment.GetEnvironmentVariable("NARCISSUS_OUTPUT");
         if(!string.IsNullOrEmpty(destination))
         {

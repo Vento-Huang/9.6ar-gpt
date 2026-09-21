@@ -124,7 +124,7 @@ public sealed class NarcissusModel
     /// <summary>Latest delay is 11 seconds, so every flower completes exactly by 21.
     /// All vertices collapse to their root at/before their scheduled birth.</summary>
     public void Evaluate(float seconds,float delay,float breathingPhase,Vector3 root,
-        Quaternion rotation,float scale,Vector3[] output,int offset,Vector3 headOffset=default,bool attached=false)
+        Quaternion rotation,float scale,Vector3[] output,int offset,Vector3 headOffset=default,bool attached=false,Vector3 sway=default)
     {
         float stem=Ease(seconds,delay,delay+6);
         float leaves=Ease(seconds,delay+1,delay+8);
@@ -145,7 +145,9 @@ public sealed class NarcissusModel
             }
             // Bend the stem continuously toward its spaced crown; roots remain attached.
             float bend=Parts[i]==0?UV[i].y*UV[i].y:Parts[i]==1?UV[i].x*.08f:1f;
-            output[offset+i]=root+rotation*(p*scale)+headOffset*bend;
+            float jointT=Parts[i]==0?UV[i].y:Parts[i]==1?UV[i].x*.12f:1f;
+            float jointWeight=jointT<.5f?jointT*.7f:.35f+(jointT-.5f)*1.3f;
+            output[offset+i]=root+rotation*(p*scale)+headOffset*bend+sway*jointWeight;
         }
     }
 }
