@@ -116,6 +116,17 @@ public static class FaceRendererChecks
         Check(faces[4].Update(raw, points[4], Matrix4x4.identity, true, 5f, 3f, true), "growth frame");
         Check(faces[4].GrowthProgress > 0f, "completed entry enables subsequent independent growth clock");
         Near(faces[5].GrowthProgress, 0f, "newcomer has no other person's growth progress");
+        using (var timeline = new FacelessFaceRenderer(settings))
+        {
+            timeline.Reset(700);
+            Check(timeline.Update(raw, points[0], Matrix4x4.identity, true, 0f, 0f, true), "growth timeline begins");
+            timeline.Update(raw, points[0], Matrix4x4.identity, true, 2f, 2f, true);
+            Near(timeline.GrowthProgress, 0f, "two-second entry precedes growth");
+            timeline.Update(raw, points[0], Matrix4x4.identity, true, 22f, 20f, true);
+            Check(timeline.GrowthProgress < 1f, "growth not finished at twenty seconds");
+            timeline.Update(raw, points[0], Matrix4x4.identity, true, 23f, 1f, true);
+            Near(timeline.GrowthProgress, 1f, "growth completes after twenty-one seconds");
+        }
         settings.playEntryAnimation = false;
         Near(faces[5].EntryProgress, 1f, "shared final skin override");
         settings.playEntryAnimation = true;
@@ -152,7 +163,7 @@ public class MidFaceEraseMask : UnityEngine.Object
 {
     public Shader reconstructionShader = new Shader(), compositeShader = new Shader(), surfaceShader = new Shader();
     public bool playEntryAnimation = true, showMask;
-    public float entryDurationSeconds = 2f, maskScale = 1f, featherFraction = .09f, landmarkCutoff = 4f;
+    public float entryDurationSeconds = 2f, growthDurationSeconds = 21f, maskScale = 1f, featherFraction = .09f, landmarkCutoff = 4f;
     public float localColorStrength = 1f, highlightSuppression = .85f, colorSmoothingSeconds = .065f;
     public float effectAmount = 1f, volume, fineGrain = .35f;
     public int reconstructionResolution = 256;

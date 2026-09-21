@@ -1,0 +1,15 @@
+newmtl part_0
+Kd 0.18 0.26 0.12
+Ns 35
+
+newmtl part_1
+Kd 0.22 0.32 0.16
+Ns 35
+
+newmtl part_2
+Kd 0.91 0.91 0.79
+Ns 45
+
+newmtl part_3
+Kd 0.82 0.60 0.19
+Ns 40

@@ -45,6 +45,11 @@ public class MidFaceEraseMask : MonoBehaviour
     [Min(0.5f)] public float resetAfterAbsence = 3f;
     [Range(0.08f, 0.5f)] public float lostFaceFadeSeconds = 0.18f;
 
+    [Header("Narcissus / 水仙生长")]
+    public bool growNarcissus = true;
+    [Tooltip("Growth begins after the two-second skin entry. Each viewer has an independent clock.")]
+    [Min(0.1f)] public float growthDurationSeconds = 21f;
+
     [Header("Debug / 调试")]
     public bool showLandmarks = false;
     public bool showMask = false;
@@ -67,6 +72,7 @@ public class MidFaceEraseMask : MonoBehaviour
     readonly FacelessTrackAssigner _assigner = new FacelessTrackAssigner();
     readonly FacelessFaceRenderer[] _faces = new FacelessFaceRenderer[MaximumFaces];
     readonly RawImage[] _layers = new RawImage[MaximumFaces];
+    readonly NarcissusFaceGrowth[] _plants = new NarcissusFaceGrowth[MaximumFaces];
     readonly Vector2[][] _detections = new Vector2[MaximumFaces][];
     readonly Rect[] _bounds = new Rect[MaximumFaces];
     readonly Matrix4x4[] _poses = new Matrix4x4[MaximumFaces];
@@ -143,7 +149,7 @@ public class MidFaceEraseMask : MonoBehaviour
             {
                 // Generated overlays have a Faceless name and must never be
                 // mistaken for the source when the sample recreates its UI.
-                if (img.gameObject.name.StartsWith("Faceless track ")) continue;
+                if (img.gameObject.name.StartsWith("Faceless track ") || img.gameObject.name == "Narcissus growth") continue;
                 if (img.GetComponent<Mediapipe.Unity.Screen>() != null ||
                     img.GetComponentInParent<Mediapipe.Unity.Screen>() != null)
                 { screenImage = img; break; }
@@ -237,7 +243,15 @@ public class MidFaceEraseMask : MonoBehaviour
                     _faces[i].ApplyComposite(drawing, _videoVisibility);
             }
             if (!_assigner.SlotIsActive[i] && !layer.enabled)
-            { _faces[i].Dispose(); _faces[i] = null; Destroy(layer.gameObject); _layers[i] = null; }
+            {
+                if (_plants[i] != null) { _plants[i].Dispose(); _plants[i] = null; }
+                _faces[i].Dispose(); _faces[i] = null; Destroy(layer.gameObject); _layers[i] = null;
+            }
+            if (_faces[i] != null)
+            {
+                if (_plants[i] == null && growNarcissus) _plants[i] = new NarcissusFaceGrowth(this);
+                if (_plants[i] != null) _plants[i].Update(_faces[i], _layers[i], _cameraWidth, _cameraHeight, _videoVisibility);
+            }
         }
         foreach (var item in _pointVisuals)
             if (item.Key != null) item.Key.forceRenderingOff = !showLandmarks || !item.Value;
@@ -416,7 +430,7 @@ public class MidFaceEraseMask : MonoBehaviour
         if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.R)
         { ReplayEntry(); Event.current.Use(); }
         if (!showControls) return;
-        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 280), DrawControls, "Faceless / 6 faces");
+        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 320), DrawControls, "Faceless / 6 faces");
     }
     void DrawControls(int id)
     {
@@ -427,6 +441,8 @@ public class MidFaceEraseMask : MonoBehaviour
         effectAmount = GUILayout.HorizontalSlider(effectAmount, 0, 1);
         showLandmarks = GUILayout.Toggle(showLandmarks, "468 landmarks / face");
         showMask = GUILayout.Toggle(showMask, "Regions + boundary");
+        growNarcissus = GUILayout.Toggle(growNarcissus, "Narcissus / 21 s growth");
+        GUILayout.Label("Growth / " + (GrowthProgress * 100f).ToString("0") + "%");
         if (GUILayout.Button("Final skin")) ShowFinalSkin();
         if (GUILayout.Button("Replay all entries (R)")) ReplayEntry();
         if (GUILayout.Button("Hide controls (H)")) showControls = false;
@@ -438,6 +454,7 @@ public class MidFaceEraseMask : MonoBehaviour
         _lastPair = _lastSeen = -100f; _captureFps = 0f;
         for (int i = 0; i < MaximumFaces; i++)
         {
+            if (_plants[i] != null) { _plants[i].Dispose(); _plants[i] = null; }
             if (_faces[i] != null) _faces[i].Dispose();
             if (_layers[i] != null) { _layers[i].enabled = false; Destroy(_layers[i].gameObject); }
             _faces[i] = null; _layers[i] = null;

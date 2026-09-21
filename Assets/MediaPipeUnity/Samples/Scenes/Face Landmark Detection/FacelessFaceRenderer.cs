@@ -134,7 +134,7 @@ public sealed class FacelessFaceRenderer : IDisposable
             HasPose = hasPose;
             Ready = IsTracking = true;
             GrowthProgress = _settings.playEntryAnimation
-                ? Ramp(PresentationSeconds, EntryDuration, EntryDuration + 9f) : 0f;
+                ? Ramp(PresentationSeconds, EntryDuration, EntryDuration + Mathf.Max(.1f, _settings.growthDurationSeconds)) : 0f;
             _reportedFailure = false;
             return true;
         }
