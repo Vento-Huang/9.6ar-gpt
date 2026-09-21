@@ -525,6 +525,64 @@ def highlight_tests(work,surface,tex,render,read,reconstruct,seed_texture,donor_
         assert case['max_confidence']>.02,('all cheek color sources lost',case)
     return report
 
+def temporal_seam_tests(work,tex,render,read):
+    """Changing hole topology must not stamp its edges into smooth skin color.
+
+    Execute the production temporal fragment with identical current/history
+    textures but different fill atlases. Also bound stale RGB islands, including
+    chromatic differences which the luminance-only exposure gate cannot see.
+    """
+    size=256
+    yy,xx=np.mgrid[:size,:size]
+    pattern=np.zeros((size,size))
+    pattern[80:88,98:114]=1
+    pattern[84:94,142:148]=1
+    radius=np.sqrt(((xx-128)/1.1)**2+(yy-157)**2)
+    pattern[(radius>22)&(radius<31)&(yy>145)]=1
+    fill=tex((size,size),np.repeat(pattern[:,:,None],4,axis=-1))
+    zero=tex((size,size),np.zeros((size,size,4)))
+    target=tex((size,size))
+    cases=[]
+    for label,delta in [('brighter',np.array([.025,.025,.025])),
+                        ('darker',np.array([-.025,-.025,-.025])),
+                        ('chromatic',np.array([.05,-.014866,.0]))]:
+        color=np.array([.50,.35,.25])+xx[:,:,None]/size*np.array([.05,.02,.01])
+        current=np.dstack((color,np.ones((size,size))))
+        history=current.copy();history[:,:,:3]+=delta
+        now=tex((size,size),current);previous=tex((size,size),history)
+        outputs=[]
+        for mask in [zero,fill]:
+            render('fragTemporal',now,target,{'_HistoryTex':previous,'_InteriorTex':mask},
+                   {'_TemporalWeight':.15})
+            outputs.append(read(target))
+        cases.append({'case':label,'topology_color_delta':float(np.abs(outputs[1]-outputs[0]).max()),
+                      'history_error':float(np.abs(outputs[1][:,:,:3]-color).max())})
+        now.release();previous.release()
+    # An old discontinuous island must decay without retaining a large imprint.
+    current=np.ones((size,size,4))*[.5,.35,.25,1.]
+    history=current.copy();history[pattern>0,:3]+=.04
+    now=tex((size,size),current);previous=tex((size,size),history)
+    errors=[]
+    for frame in range(8):
+        render('fragTemporal',now,target,{'_HistoryTex':previous,'_InteriorTex':fill},
+               {'_TemporalWeight':.15})
+        output=read(target);errors.append(float(np.abs(output[:,:,:3]-current[:,:,:3]).max()))
+        previous.write(output.astype('f4').tobytes())
+    # Identical frames remain exactly unchanged; do not flatten their gradient.
+    previous.write(current.astype('f4').tobytes())
+    render('fragTemporal',now,target,{'_HistoryTex':previous,'_InteriorTex':fill},{'_TemporalWeight':.15})
+    steady_error=float(np.abs(read(target)-current).max())
+    report={'cases':cases,'stale_island_errors':errors,'steady_error':steady_error,
+            'unity_editor_tested':False,'metal_tested':False,'camera_tested':False}
+    (work/'temporal-seam-checks.json').write_text(json.dumps(report,indent=2))
+    print('temporal seam checks:',json.dumps(report))
+    assert max(c['topology_color_delta'] for c in cases)<1e-6, 'fill atlas stamps a color seam'
+    assert max(c['history_error'] for c in cases)<.0081, 'unbounded stale RGB history'
+    assert errors[0]<.0081 and errors[-1]<.001 and all(b<=a+1e-7 for a,b in zip(errors,errors[1:]))
+    assert steady_error<1e-6
+    for texture in [fill,zero,target,now,previous]:texture.release()
+    return report
+
 def interior_tests(work,surface,tex,render,read,reconstruct,seed_texture):
     """Closed central gaps: coverage, source exclusion and temporal carry-over.
 
@@ -657,19 +715,9 @@ def interior_tests(work,surface,tex,render,read,reconstruct,seed_texture):
         stage_errors.append(float(np.abs(actual-baseline).max()))
         assert not np.any(actual+1e-6<baseline)
     assert stage_errors[0]<1e-6,stage_errors
-    # A small stale bright island would evade the original exposure-change gate.
-    # The new temporal rule must use the current color only inside the fill.
-    current=np.ones((256,256,4))*[.5,.35,.25,1.]
-    history=current.copy();history[:,:,:3]+=.025
-    now=tex((256,256),current);previous=tex((256,256),history);temporal=tex((256,256))
-    render('fragTemporal',now,temporal,{'_HistoryTex':previous,'_InteriorTex':zero},dict(values,_TemporalWeight=.15))
-    old_temporal=read(temporal)
-    render('fragTemporal',now,temporal,{'_HistoryTex':previous,'_InteriorTex':fill},dict(values,_TemporalWeight=.15))
-    new_temporal=read(temporal)
-    temporal_gap_error=float(np.abs(new_temporal[holes]-current[holes]).max())
-    temporal_exterior_delta=float(np.abs(new_temporal[field==0]-old_temporal[field==0]).max())
-    assert temporal_gap_error<1e-6 and temporal_exterior_delta<1e-6
-    assert np.abs(old_temporal[holes]-current[holes]).max()>.01
+    # One continuous history rule must replace the old fill-only reset, which
+    # printed hard hole boundaries into otherwise smooth temporal skin colors.
+    temporal_report=temporal_seam_tests(work,tex,render,read)
     report={'synthetic_only':True,'csharp_execution_tested':False,'unity_editor_tested':False,'metal_tested':False,
             'poses':cases,'pose_count':len(cases),'native_oracle_near_opaque_alpha':.99999,
             'old_exterior_allowed_opacity_delta':1.1e-5,
@@ -677,7 +725,7 @@ def interior_tests(work,surface,tex,render,read,reconstruct,seed_texture):
             'near_opaque_soft_seams_not_expanded':soft_channels,
             'known_gap_pixel':gap.tolist(),'color_gap':outcomes,
             'entry_all_stages_zero_max_error':early_error,'entry_stage_fill_deltas':stage_errors,
-            'temporal_current_gap_max_error':temporal_gap_error,'temporal_exterior_max_delta':temporal_exterior_delta}
+            'temporal_continuity':temporal_report}
     (work/'interior-checks.json').write_text(json.dumps(report,indent=2))
     print('interior checks:',json.dumps({k:v for k,v in report.items() if k!='poses'}))
     diagnostic=[case for case in topology_evidence if case['yaw']==-20 and case['pitch']==0]
@@ -688,6 +736,7 @@ def main():
     ap=argparse.ArgumentParser();ap.add_argument('--work',type=Path,required=True);ap.add_argument('--egl')
     ap.add_argument('--interior-only',action='store_true',help='Run new gap regression after the common shader smoke checks')
     ap.add_argument('--multiface-only',action='store_true',help='Run six-face overlay regression after the common shader smoke checks')
+    ap.add_argument('--temporal-only',action='store_true',help='Run moving interior color-seam regression')
     a=ap.parse_args()
     kwargs={'backend':'egl'}
     if a.egl:kwargs['libegl']=a.egl
@@ -819,6 +868,9 @@ def main():
     if a.multiface_only:
         from verify_multiface import multi_face_tests
         multi_face_tests(a.work, surface, tex, render, read, reconstruct)
+        return
+    if a.temporal_only:
+        temporal_seam_tests(a.work,tex,render,read)
         return
     if a.interior_only:
         interior_tests(a.work,surface,tex,render,read,reconstruct,known[0])
