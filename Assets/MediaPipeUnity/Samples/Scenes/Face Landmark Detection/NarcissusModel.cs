@@ -53,7 +53,7 @@ public sealed class NarcissusModel
                     Add(p,p*.025f,new Vector2(t,(across+1)*.5f),leaf,1);
                 }
             }
-            Grid(start,9,3,false);
+            ThickGrid(start,9,3,.025f,blade==0);
         }
         for (int petalIndex=0; petalIndex<6; petalIndex++)
         {
@@ -69,27 +69,29 @@ public sealed class NarcissusModel
                     float across=side/3f-1;
                     float width=.44f*Mathf.Pow(Mathf.Max(0,Mathf.Sin(Mathf.PI*t)),.65f)+.004f;
                     Vector3 p=radial*(.12f+.92f*t)+tangent*(across*width);
-                    p.z=.09f*Mathf.Sin(t*Mathf.PI)-.12f*t*t+.08f*across*across;
+                    p.z=.12f*Mathf.Sin(t*Mathf.PI)-.12f*t*t+.10f*across*across;
+                    p.z+=.008f*Mathf.Sin(t*Mathf.PI)*Mathf.Cos(across*Mathf.PI*3);
+                    p.z+=.012f*Mathf.Sin(t*Mathf.PI*2+petalIndex)*across;
                     Vector3 bud=radial*(.055f+.10f*Mathf.Sin(t*Mathf.PI))+tangent*(across*width*.14f);
                     bud.z=.88f*t;
                     Add(p,bud,new Vector2(t,(across+1)*.5f),petal,2);
                 }
             }
-            Grid(start,13,7,false);
+            ThickGrid(start,13,7,.018f,false);
         }
         start=_open.Count;
-        float[] radii={.15f,.20f,.26f,.30f,.265f,.19f};
-        float[] heights={.015f,.12f,.30f,.41f,.37f,.10f};
+        float[] radii={.15f,.19f,.235f,.275f,.30f,.303f,.28f,.245f,.19f};
+        float[] heights={.015f,.10f,.23f,.34f,.405f,.42f,.40f,.30f,.10f};
         for (int row=0; row<radii.Length; row++)
         for (int side=0; side<=48; side++)
         {
             float a=side/48f*Mathf.PI*2;
             float flute=1+.055f*Mathf.Cos(12*a);
             Vector3 p=new Vector3(Mathf.Cos(a)*radii[row]*flute,Mathf.Sin(a)*radii[row]*flute,
-                heights[row]+(row==3?.025f*Mathf.Cos(12*a):0));
-            Add(p,new Vector3(p.x*.22f,p.y*.22f,p.z*.7f),new Vector2(side/48f,row/5f),cup,3);
+                heights[row]+(.016f*Mathf.Sin(12*a)+.006f*Mathf.Sin(24*a))*Mathf.Pow(heights[row]/.42f,3));
+            Add(p,new Vector3(p.x*.22f,p.y*.22f,p.z*.7f),new Vector2(side/48f,row/(radii.Length-1f)),cup,3);
         }
-        Grid(start,6,49,true);
+        Grid(start,radii.Length,49,true);
         // Close the throat with a small golden dome: the corona is a cup, not a hole through the flower.
         start=_open.Count;
         Add(new Vector3(0,0,.16f),new Vector3(0,0,.11f),new Vector2(.5f,.9f),cup,3);
@@ -100,8 +102,89 @@ public sealed class NarcissusModel
             Add(p,new Vector3(p.x*.22f,p.y*.22f,p.z*.7f),new Vector2(side/24f,.7f),cup,3);
             if(side>0) Triangle(start,start+side,start+side+1);
         }
+        // Six stamens with paired pollen lobes and a central three-lobed stigma.
+        // All stay inside the existing cup radius and height protection volume.
+        Color filament=new Color(.92f,.72f,.30f,1),pollen=new Color(.95f,.68f,.13f,1);
+        for(int stamen=0;stamen<6;stamen++)
+        {
+            float angle=stamen*Mathf.PI/3;
+            Vector3 basePoint=new Vector3(Mathf.Cos(angle)*.065f,Mathf.Sin(angle)*.065f,.13f);
+            Vector3 tip=new Vector3(Mathf.Cos(angle)*.105f,Mathf.Sin(angle)*.105f,.285f+(stamen%2)*.035f);
+            Tube(basePoint,tip,.009f,filament);
+            for(int lobe=0;lobe<2;lobe++)
+                Ellipsoid(tip+new Vector3((lobe==0?-1:1)*.014f,0,0),new Vector3(.016f,.027f,.022f),pollen);
+        }
+        Tube(new Vector3(0,0,.13f),new Vector3(0,0,.35f),.012f,filament);
+        for(int lobe=0;lobe<3;lobe++)
+        {
+            float a=lobe*Mathf.PI*2/3;
+            Ellipsoid(new Vector3(Mathf.Cos(a)*.014f,Mathf.Sin(a)*.014f,.355f),new Vector3(.021f,.021f,.012f),filament);
+        }
         Open=_open.ToArray(); Closed=_closed.ToArray(); UV=_uv.ToArray(); Colors=_colors.ToArray();
         Parts=_parts.ToArray(); Triangles=_indices.ToArray();
+    }
+
+    // Closed thin shell: front, back and welded perimeter. Not a double-sided plane.
+    void ThickGrid(int first,int rows,int columns,float thickness,bool reverse)
+    {
+        int count=rows*columns,triStart=_indices.Count;
+        Grid(first,rows,columns,reverse);
+        int triEnd=_indices.Count,back=_open.Count;
+        for(int i=0;i<count;i++)
+        {
+            int v=first+i;
+            Add(_open[v]-new Vector3(0,0,thickness),_closed[v]-new Vector3(0,0,thickness*.18f),_uv[v],_colors[v],_parts[v]);
+        }
+        var edges=new Dictionary<long,int[]>();
+        for(int t=triStart;t<triEnd;t+=3)
+        {
+            int a=_indices[t],b=_indices[t+1],c=_indices[t+2];
+            Triangle(back+a-first,back+c-first,back+b-first);
+            int[] vertices={a,b,c};
+            for(int edge=0;edge<3;edge++)
+            {
+                int x=vertices[edge],y=vertices[(edge+1)%3];
+                long key=((long)Math.Min(x,y)<<32)|(uint)Math.Max(x,y);
+                if(edges.ContainsKey(key))edges.Remove(key);else edges[key]=new[]{x,y};
+            }
+        }
+        foreach(var e in edges.Values)
+        { int a=e[0],b=e[1],ab=back+a-first,bb=back+b-first;Triangle(a,ab,b);Triangle(b,ab,bb); }
+    }
+    void FlowerVertex(Vector3 p,Vector2 uv,Color color)
+    { Add(p,new Vector3(p.x*.2f,p.y*.2f,p.z*.7f),uv,color,3); }
+    void Tube(Vector3 a,Vector3 b,float radius,Color color)
+    {
+        int first=_open.Count;
+        for(int row=0;row<2;row++)for(int side=0;side<8;side++)
+        {
+            float angle=side*Mathf.PI/4;
+            FlowerVertex((row==0?a:b)+new Vector3(Mathf.Cos(angle)*radius,Mathf.Sin(angle)*radius,0),new Vector2(side/8f,.8f),color);
+        }
+        for(int side=0;side<8;side++)
+        {int n=(side+1)%8;Triangle(first+side,first+n,first+8+side);Triangle(first+n,first+8+n,first+8+side);}
+        int bottom=_open.Count;FlowerVertex(a,new Vector2(.5f,.8f),color);
+        int top=_open.Count;FlowerVertex(b,new Vector2(.5f,.8f),color);
+        for(int side=0;side<8;side++)
+        {int n=(side+1)%8;Triangle(bottom,first+n,first+side);Triangle(top,first+8+side,first+8+n);}
+    }
+    void Ellipsoid(Vector3 center,Vector3 radius,Color color)
+    {
+        int first=_open.Count;
+        FlowerVertex(center+new Vector3(0,0,radius.z),new Vector2(.5f,.8f),color);
+        for(int row=1;row<4;row++)for(int side=0;side<8;side++)
+        {
+            float lat=row*Mathf.PI/4,a=side*Mathf.PI/4;
+            FlowerVertex(center+new Vector3(Mathf.Sin(lat)*Mathf.Cos(a)*radius.x,Mathf.Sin(lat)*Mathf.Sin(a)*radius.y,Mathf.Cos(lat)*radius.z),new Vector2(side/8f,.8f),color);
+        }
+        int bottom=_open.Count;FlowerVertex(center-new Vector3(0,0,radius.z),new Vector2(.5f,.8f),color);
+        for(int side=0;side<8;side++)
+        {
+            int n=(side+1)%8;Triangle(first,first+1+side,first+1+n);
+            for(int row=0;row<2;row++)
+            {int a=first+1+row*8+side,b=first+1+row*8+n;Triangle(a,a+8,b);Triangle(b,a+8,b+8);}
+            Triangle(bottom,first+17+n,first+17+side);
+        }
     }
 
     static Vector3 StemPoint(float t) => new Vector3(.065f*Mathf.Sin(t*Mathf.PI), .25f*t, 1.2f*t);

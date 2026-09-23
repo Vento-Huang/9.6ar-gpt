@@ -13,3 +13,11 @@ Ns 45
 newmtl part_3
 Kd 0.82 0.60 0.19
 Ns 40
+
+newmtl part_4
+Kd 0.92 0.72 0.30
+Ns 35
+
+newmtl part_5
+Kd 0.95 0.68 0.13
+Ns 25

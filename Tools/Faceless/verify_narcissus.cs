@@ -15,7 +15,7 @@ static class NarcissusChecks
     static void Main()
     {
         var model=new NarcissusModel(); var vertices=new Vector3[model.VertexCount];
-        Check(model.VertexCount*38+12*13*6<65535,"colony exceeds 16-bit mesh indices");
+        Check(model.VertexCount*38+12*13*6<120000,"colony exceeds detailed mesh budget");
         Check(model.Triangles.All(i=>i>=0&&i<model.VertexCount),"invalid topology");
         model.Evaluate(0,0,0,Vector3.zero,Quaternion.identity,1,vertices,0);
         Check(vertices.All(p=>p.magnitude<1e-7),"birth must start at root");
@@ -36,6 +36,24 @@ static class NarcissusChecks
             if(Vector3.Cross(b-a,c-a).magnitude>1e-8) nondegenerate++;
         }
         Check(nondegenerate==model.Triangles.Length/3,"degenerate mature geometry");
+        var edges=new System.Collections.Generic.Dictionary<long,int>();
+        for(int t=0;t<model.Triangles.Length;t+=3)
+        {
+            int part=model.Parts[model.Triangles[t]];if(part!=1 && part!=2)continue;
+            for(int e=0;e<3;e++)
+            {
+                int a=model.Triangles[t+e],b=model.Triangles[t+(e+1)%3];
+                long key=((long)Math.Min(a,b)<<32)|(uint)Math.Max(a,b);
+                edges[key]=edges.ContainsKey(key)?edges[key]+1:1;
+            }
+        }
+        Check(edges.Count>0 && edges.Values.All(n=>n==2),"petal/leaf shell has an open or nonmanifold edge");
+        for(int i=0;i<model.VertexCount;i++)if(model.Parts[i]==3)
+        {
+            Vector3 p=model.Open[i];
+            Check(p.x*p.x+p.y*p.y<.33f*.33f && p.z<.47f,"cup details exceed protected volume");
+        }
+        Console.WriteLine("PASS: watertight leaf/petal shells and cup details inside existing protection volume.");
         var anchorText=File.ReadAllText("Assets/MediaPipeUnity/Samples/Scenes/Face Landmark Detection/NarcissusFaceGrowth.cs").Split(new[]{"Anchors={"},StringSplitOptions.None)[1].Split(new[]{"};"},StringSplitOptions.None)[0];
         var anchors=Regex.Matches(anchorText,@"\d+").Cast<Match>().Select(m=>int.Parse(m.Value)).ToArray();
         Check(anchors.Length==NarcissusColonyLayout.Count,"layout and anchors disagree");
@@ -117,23 +135,34 @@ static class NarcissusChecks
             var obj=new StringBuilder("# Original procedural Narcissus. Mature mesh; growth is driven in Unity.\nmtllib Narcissus.mtl\n");
             foreach(var p in vertices) obj.AppendFormat(CultureInfo.InvariantCulture,"v {0:R} {1:R} {2:R}\n",p.x,p.y,p.z);
             foreach(var uv in model.UV) obj.AppendFormat(CultureInfo.InvariantCulture,"vt {0:R} {1:R}\n",uv.x,uv.y);
+            var normals=new Vector3[model.VertexCount];
+            for(int j=0;j<model.Triangles.Length;j+=3)
+            {
+                int a=model.Triangles[j],b=model.Triangles[j+1],c=model.Triangles[j+2];
+                Vector3 n=Vector3.Cross(vertices[b]-vertices[a],vertices[c]-vertices[a]);
+                normals[a]+=n;normals[b]+=n;normals[c]+=n;
+            }
+            foreach(var n in normals)
+            {var unit=n/Math.Max(n.magnitude,.000001f);obj.AppendFormat(CultureInfo.InvariantCulture,"vn {0:R} {1:R} {2:R}\n",unit.x,unit.y,unit.z);}
             int last=-1;
             for(int i=0;i<model.Triangles.Length;i+=3)
             {
                 int part=model.Parts[model.Triangles[i]];
+                var materialColor=model.Colors[model.Triangles[i]];
+                if(part==3 && materialColor.r>.9f) part=materialColor.b>.2f?4:5;
                 if(part!=last) { obj.Append("g part_"+part+"\nusemtl part_"+part+"\n"); last=part; }
                 int a=model.Triangles[i]+1,b=model.Triangles[i+1]+1,c=model.Triangles[i+2]+1;
-                obj.Append($"f {a}/{a} {b}/{b} {c}/{c}\n");
+                obj.Append($"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}\n");
             }
             File.WriteAllText(Path.Combine(destination,"Narcissus.obj"),obj.ToString());
-            File.WriteAllText(Path.Combine(destination,"Narcissus.mtl"),"newmtl part_0\nKd 0.18 0.26 0.12\nNs 35\n\nnewmtl part_1\nKd 0.22 0.32 0.16\nNs 35\n\nnewmtl part_2\nKd 0.91 0.91 0.79\nNs 45\n\nnewmtl part_3\nKd 0.82 0.60 0.19\nNs 40\n");
+            File.WriteAllText(Path.Combine(destination,"Narcissus.mtl"),"newmtl part_0\nKd 0.18 0.26 0.12\nNs 35\n\nnewmtl part_1\nKd 0.22 0.32 0.16\nNs 35\n\nnewmtl part_2\nKd 0.91 0.91 0.79\nNs 45\n\nnewmtl part_3\nKd 0.82 0.60 0.19\nNs 40\n\nnewmtl part_4\nKd 0.92 0.72 0.30\nNs 35\n\nnewmtl part_5\nKd 0.95 0.68 0.13\nNs 25\n");
             string preview=Environment.GetEnvironmentVariable("NARCISSUS_PREVIEW_DATA");
             if(!string.IsNullOrEmpty(preview)) File.WriteAllText(preview,JsonSerializer.Serialize(new {
                 open=model.Open.Select(XYZ),closed=model.Closed.Select(XYZ),parts=model.Parts,triangles=model.Triangles,
                 uv=model.UV.Select(p=>new[]{p.x,p.y}),colors=model.Colors.Select(c=>new[]{c.r,c.g,c.b,c.a}),frames=frames,
                 mature=vertices.Select(XYZ),colonies=snapshots,roots=roots.Select(XYZ),sizes=colony.Sizes,delays=colony.Delays}));
         }
-        Console.WriteLine($"PASS: {model.VertexCount} vertices / {nondegenerate} triangles; root birth, finite stages, 21-second completion, 38-flower index budget; actual mesh exported.");
+        Console.WriteLine($"PASS: {model.VertexCount} vertices / {nondegenerate} triangles; root birth, finite stages, 21-second completion, 38-flower 32-bit index budget; actual mesh exported.");
     }
 }
 namespace UnityEngine

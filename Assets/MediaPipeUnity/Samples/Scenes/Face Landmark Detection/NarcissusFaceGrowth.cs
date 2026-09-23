@@ -334,7 +334,7 @@ public sealed class NarcissusFaceGrowth : IDisposable
                 indices[cursor++]=a;indices[cursor++]=b;indices[cursor++]=c;
                 indices[cursor++]=b;indices[cursor++]=d;indices[cursor++]=c;
             }
-            _mesh=new Mesh {name="Narcissus living colony",hideFlags=HideFlags.HideAndDontSave};
+            _mesh=new Mesh {indexFormat=UnityEngine.Rendering.IndexFormat.UInt32,name="Narcissus living colony",hideFlags=HideFlags.HideAndDontSave};
             _mesh.MarkDynamic(); _mesh.vertices=_vertices; _mesh.uv=uv; _mesh.uv2=ids; _mesh.colors=colors; _mesh.triangles=indices;
         }
         if (_pollenMesh==null)
