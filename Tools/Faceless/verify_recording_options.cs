@@ -46,6 +46,26 @@ static class VerifyRecordingOptions
         o.totalSeconds=99999;o.Normalize();Check(o.totalSeconds==3600,"Long duration bounded");
         o=new NarcissusRecordingOptions{totalSeconds=100,revealSeconds=3};
         Check(o.FrameCount==3000&&o.ReverseSeconds==97,"Requested 100-second film");
+        var oneTurn=new NarcissusRecordingOptions{totalSeconds=100,revealSeconds=3};
+        foreach(int turns in new[]{1,5,10,20,360}){
+            o.rotationTurns=turns;o.Normalize();
+            Check(Math.Abs(o.AverageSecondsPerTurn-97.0/turns)<1e-8,"Displayed average rotation speed");
+            Check(Near(o.RotationDegrees(0),0),"Multi-turn rotation starts facing front");
+            Check(o.RotationDegrees(97)==360*turns&&o.RotationDegrees(100)==360*turns,"Every selected turn completes before reveal, then holds front");
+            Check(o.FrameCount==3000&&o.ReverseSeconds==97,"Speed does not change film duration");
+            float previous=-1;
+            for(int frame=0;frame<o.FrameCount;frame++){
+                float t=o.FrameTime(frame),angle=o.RotationDegrees(t);
+                Check(angle>=previous&&angle<=360*turns,"Multi-turn frame angles monotonic and bounded");previous=angle;
+                Check(o.GrowthTime(t)==oneTurn.GrowthTime(t),"Rotation speed does not change flower timeline");
+                Check(o.FrameTime(frame)==oneTurn.FrameTime(frame),"Rotation speed does not change frame timestamps");
+            }
+            Check(Math.Abs(o.RotationDegrees(48.5f)/oneTurn.RotationDegrees(48.5f)-turns)<.0001,"Selected turns scale mid-film speed");
+            Check(o.Description(1).Contains(turns+" revolutions"),"Export metadata records turns");
+        }
+        o.rotationTurns=10;Check(Math.Abs(o.AverageSecondsPerTurn-9.7)<1e-8,"100 seconds, 3-second reveal, 10 turns averages 9.7 seconds/turn");
+        o.rotationTurns=0;o.Normalize();Check(o.rotationTurns==1,"Old or invalid zero turn count defaults to one");
+        o.rotationTurns=999;o.Normalize();Check(o.rotationTurns==360,"Excessive turn count bounded");
         o.totalSeconds=103;Check(o.ReverseSeconds==100,"100 seconds plus reveal");
         foreach(NarcissusRecordingOptions.Quality q in Enum.GetValues(typeof(NarcissusRecordingOptions.Quality))){
             o.quality=q;Check(o.EncoderArguments("/tmp/a folder","/tmp/a film.mp4").Contains("-crf "+o.Crf),"Selected MP4 quality");

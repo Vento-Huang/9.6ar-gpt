@@ -52,6 +52,7 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         EditorGUI.BeginChangeCheck();
         options.totalSeconds=EditorGUILayout.DelayedIntField("Total seconds / 总时长",options.totalSeconds);
         options.revealSeconds=EditorGUILayout.DelayedIntField("Face reveal seconds / 露脸",options.revealSeconds);
+        options.rotationTurns=EditorGUILayout.DelayedIntField("Rotation turns / 自转圈数",options.rotationTurns);
         options.resolution=(NarcissusRecordingOptions.Resolution)EditorGUILayout.EnumPopup("Resolution / 分辨率",options.resolution);
         options.fps=EditorGUILayout.IntPopup("Frame rate / 帧率",options.fps,new[]{"24 fps","25 fps","30 fps","60 fps"},new[]{24,25,30,60});
         options.format=(NarcissusRecordingOptions.Format)EditorGUILayout.EnumPopup("Format / 格式",options.format);
@@ -59,7 +60,7 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
             options.quality=(NarcissusRecordingOptions.Quality)EditorGUILayout.EnumPopup("MP4 quality / 画质",options.quality);
         options.Normalize();
         if(EditorGUI.EndChangeCheck()){previewTime=Mathf.Min(previewTime,options.totalSeconds);if(output!=null)Guard(()=>RenderFrame(previewTime));}
-        EditorGUILayout.HelpBox("0–"+options.ReverseSeconds+" s: one rotation + reverse growth. Last "+options.revealSeconds+" s: face reveal.\n"+options.Width+" × "+options.Height+" · "+options.fps+" fps · "+options.FrameCount+" frames. Total includes the face reveal.",MessageType.Info);
+        EditorGUILayout.HelpBox("0–"+options.ReverseSeconds+" s: "+options.rotationTurns+" rotations + reverse growth (average "+options.AverageSecondsPerTurn.ToString("0.##")+" s/turn). Last "+options.revealSeconds+" s: stop facing front + face reveal.\n"+options.Width+" × "+options.Height+" · "+options.fps+" fps · "+options.FrameCount+" frames. Total includes the face reveal.",MessageType.Info);
         if(options.format!=NarcissusRecordingOptions.Format.PNG_Sequence){
             if(GUILayout.Button("Choose ffmpeg (optional)")){string p=EditorUtility.OpenFilePanel("Choose ffmpeg executable","","");if(!string.IsNullOrEmpty(p))ffmpegPath=p;}
             if(FindEncoder()==null)EditorGUILayout.HelpBox("ffmpeg not found. Export will save PNG frames only; MP4/MOV needs ffmpeg. You can select its executable above.",MessageType.Info);
@@ -128,7 +129,8 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         EnsureOutput();
         float t=Mathf.Clamp(seconds,0,options.totalSeconds),g=options.GrowthTime(t),reveal=NarcissusModel.Ease(t,options.ReverseSeconds,options.totalSeconds);
         Vector3 pivot=new Vector3(0,calibration.displayCenterY,0);
-        Matrix4x4 rotation=Matrix4x4.Translate(pivot)*Matrix4x4.Rotate(Quaternion.Euler(0,options.RotationDegrees(t),0))*Matrix4x4.Translate(-pivot);
+        float angle=t<options.ReverseSeconds?Mathf.Repeat(options.RotationDegrees(t),360f):0f;
+        Matrix4x4 rotation=Matrix4x4.Translate(pivot)*Matrix4x4.Rotate(Quaternion.Euler(0,angle,0))*Matrix4x4.Translate(-pivot);
         Matrix4x4 vp=Projection(calibration.displayCenterY,calibration.displayHalfHeight,options.Width/(float)options.Height);
         headMaterial.SetFloat("_Reveal",reveal);headMaterial.SetMatrix("_RecordingRotation",rotation);headMaterial.SetMatrix("_RecordingViewProjection",vp);
         if(t<options.ReverseSeconds){
