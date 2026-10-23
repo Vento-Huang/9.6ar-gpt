@@ -126,6 +126,13 @@ public static class FaceRendererChecks
             Check(timeline.GrowthProgress < 1f, "growth not finished at twenty seconds");
             timeline.Update(raw, points[0], Matrix4x4.identity, true, 23f, 1f, true);
             Near(timeline.GrowthProgress, 1f, "growth completes after twenty-one seconds");
+            timeline.SeekPresentationTime(2f);
+            Near(timeline.GrowthProgress,0f,"recording can seek growth backward to zero");
+            Near(timeline.EntryProgress,1f,"skin remains fully erased at reverse-growth endpoint");
+            timeline.SeekPresentationTime(0f);
+            Near(timeline.EntryProgress,0f,"recording can reveal the original face");
+            bool rejected=false;try{timeline.SeekPresentationTime(float.NaN);}catch(ArgumentOutOfRangeException){rejected=true;}
+            Check(rejected,"recording rejects a nonfinite timeline");
         }
         settings.playEntryAnimation = false;
         Near(faces[5].EntryProgress, 1f, "shared final skin override");

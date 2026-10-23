@@ -36,7 +36,7 @@ Shader "Faceless/SkinComposite"
             #include "FacelessSkinCommon.cginc"
             sampler2D _MainTex, _SkinTex, _SurfaceTex;
             float4 _Color, _ClipRect, _FaceBounds;
-            float _Amount, _Volume, _Grain, _ShowMask, _VideoVisibility, _OverlayOnly;
+            float _Amount, _Volume, _Grain, _ShowMask, _VideoVisibility, _OverlayOnly, _RecordingMaskOnly;
             float _Stages[FACELESS_REGION_COUNT];
             struct appdata { float4 vertex:POSITION; float2 uv:TEXCOORD0; float4 color:COLOR; };
             struct v2f { float4 vertex:SV_POSITION; float2 uv:TEXCOORD0; float4 color:COLOR; float4 local:TEXCOORD1; };
@@ -106,6 +106,7 @@ Shader "Faceless/SkinComposite"
                 // surfaceCoverage a second time to the effect's soft edge.
                 if (_OverlayOnly > 0.5)
                     outputColor.a *= _ShowMask > 0.5 ? 1.0 : step(0.000001, surfaceCoverage);
+                if (_RecordingMaskOnly > 0.5) return float4(amount,amount,amount,1);
                 outputColor.rgb *= _VideoVisibility;
                 outputColor *= i.color;
                 #ifdef UNITY_UI_CLIP_RECT

@@ -45,6 +45,23 @@ public sealed class NarcissusFaceGrowth : IDisposable
     int _trackId=-1;
     public NarcissusFaceGrowth(MidFaceEraseMask owner) { _owner=owner; }
 
+    // Offline frames use the same layout, geometry, roots, cup guard and pollen.
+    // Only the clock and upload throttle differ from the live camera path.
+    public Mesh RecordingMesh => _mesh;
+    public Mesh RecordingPollenMesh => _pollenMesh;
+    public Material RecordingMaterial => _material;
+    public Vector3[] RecordingRoots => _roots;
+    public int RecordingFlowerVertexCount => _model == null ? 0 : _model.VertexCount;
+    bool _recording;
+    float _recordingSeconds, _recordingClock;
+    public void UpdateRecording(FacelessFaceRenderer face, RawImage skinLayer,
+        int width, int height, float growthSeconds, float clock)
+    {
+        _recording=true; _recordingSeconds=Mathf.Max(.00001f,growthSeconds); _recordingClock=clock;
+        try { Update(face,skinLayer,width,height,1); }
+        finally { _recording=false; }
+    }
+
     public void Update(FacelessFaceRenderer face,RawImage skinLayer,int cameraWidth,int cameraHeight,float visibility)
     {
         if (face==null || !face.Ready || !face.IsTracking || skinLayer==null || !skinLayer.enabled ||
@@ -52,12 +69,13 @@ public sealed class NarcissusFaceGrowth : IDisposable
         { if (_image!=null) _image.enabled=false; _trackingReady=false; return; }
         float seconds=Mathf.Max(0,face.PresentationSeconds-Mathf.Max(.1f,_owner.entryDurationSeconds));
         seconds=seconds*21f/Mathf.Max(.1f,_owner.growthDurationSeconds);
+        if (_recording) seconds=_recordingSeconds;
         if (seconds<=0) { if (_image!=null) _image.enabled=false; _trackingReady=false; return; }
         if (_trackId!=face.TrackId) { _trackId=face.TrackId; _lastRender=-100; _layout.Reset(_trackId); _layoutReady=false; _trackingReady=false; }
         if (_image!=null) { _image.enabled=true; _image.color=new Color(1,1,1,visibility); }
         // Shared matched landmarks/clock, capped at 20 geometry uploads a second.
-        if (Time.unscaledTime-_lastRender<.05f) return;
-        float dt=Mathf.Min(.1f,Mathf.Max(.001f,Time.unscaledTime-_lastRender));
+        if (!_recording && Time.unscaledTime-_lastRender<.05f) return;
+        float dt=_recording?1f/30f:Mathf.Min(.1f,Mathf.Max(.001f,Time.unscaledTime-_lastRender));
         _lastRender=Time.unscaledTime;
         RenderTexture previous=RenderTexture.active;
         bool previousSrgb=GL.sRGBWrite;
@@ -268,9 +286,9 @@ public sealed class NarcissusFaceGrowth : IDisposable
         for(int i=0;i<PollenCount;i++)
         {
             int plant=(i*7)%Anchors.Length;
-            float phase=Mathf.Repeat(Time.unscaledTime*.12f+NarcissusColonyLayout.Noise(_trackId,1200+i),1);
+            float phase=Mathf.Repeat((_recording?_recordingClock:Time.unscaledTime)*.12f+NarcissusColonyLayout.Noise(_trackId,1200+i),1);
             float alpha=Mathf.Sin(phase*Mathf.PI);
-            alpha*=alpha*(.7f+.3f*Mathf.Sin(Time.unscaledTime*1.8f+i)*Mathf.Sin(Time.unscaledTime*1.8f+i))* .95f*NarcissusModel.Ease(seconds,_layout.Delays[plant]+5,_layout.Delays[plant]+8);
+            alpha*=alpha*(.7f+.3f*Mathf.Sin((_recording?_recordingClock:Time.unscaledTime)*1.8f+i)*Mathf.Sin((_recording?_recordingClock:Time.unscaledTime)*1.8f+i))* .95f*NarcissusModel.Ease(seconds,_layout.Delays[plant]+5,_layout.Delays[plant]+8);
             if(!_owner.showPollen)alpha=0;
             Vector3 drift=new Vector3(Mathf.Sin(phase*5+i)*.18f,phase*.35f-.06f,.06f+phase*.10f);
             Vector3 p=_layout.Centers[plant]+rotation*(drift*width);

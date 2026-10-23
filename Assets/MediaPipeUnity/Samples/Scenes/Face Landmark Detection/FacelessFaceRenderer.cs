@@ -169,6 +169,15 @@ public sealed class FacelessFaceRenderer : IDisposable
 
     public void Replay() { _replayRequested = true; }
 
+    // Recording owns an absolute timeline; normal Update keeps its live clock.
+    public void SeekPresentationTime(float seconds)
+    {
+        if (!Finite(seconds)) throw new ArgumentOutOfRangeException(nameof(seconds));
+        PresentationSeconds=Mathf.Max(0,seconds);
+        GrowthProgress=Ramp(PresentationSeconds,EntryDuration,
+            EntryDuration+Mathf.Max(.1f,_settings.growthDurationSeconds));
+    }
+
     void ResetEntryClock()
     {
         PresentationSeconds = GrowthProgress = 0f;
