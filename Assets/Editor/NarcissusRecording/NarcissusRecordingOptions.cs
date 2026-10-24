@@ -19,10 +19,16 @@ public sealed class NarcissusRecordingOptions
     public int Width => resolution==Resolution.UHD4K?3840:resolution==Resolution.HD720p?1280:1920;
     public int Height => Width*9/16;
     public int ReverseSeconds => totalSeconds-revealSeconds;
-    public double DegreesPerSecond => 360.0/secondsPerTurn;
-    public double TotalRotationTurns => ReverseSeconds/(double)secondsPerTurn;
-    public double FaceAlignmentSeconds => Math.Min(1.0,revealSeconds);
-    public int FrameCount => totalSeconds*fps;
+    // Use the decimal value entered in the float field (e.g. 7.3 rather than
+    // 7.3000001907) to avoid adding an unwanted video frame at decimal periods.
+    public double RotationPeriodSeconds => (double)(decimal)secondsPerTurn;
+    public double DegreesPerSecond => 360.0/RotationPeriodSeconds;
+    public int TotalRotationTurns => Math.Max(1,(int)Math.Ceiling(ReverseSeconds/RotationPeriodSeconds-1e-9));
+    public double RevealStartSeconds => TotalRotationTurns*RotationPeriodSeconds;
+    public double ExtraRotationSeconds => Math.Max(0,RevealStartSeconds-ReverseSeconds);
+    public double ActualSeconds => RevealStartSeconds+revealSeconds;
+    public int FrameCount => (int)Math.Ceiling(ActualSeconds*fps-1e-7);
+    public double EncodedDurationSeconds => FrameCount/(double)fps;
     public int Crf => quality==Quality.Maximum?14:quality==Quality.Standard?22:18;
     public string Extension => format==Format.MOV_ProRes422HQ?".mov":".mp4";
 
@@ -39,19 +45,15 @@ public sealed class NarcissusRecordingOptions
     }
     // Keep the true encoded frame cadence so different clip lengths have the
     // same angular speed. Reserve the final reveal frame for the completed face.
-    public float FrameTime(int index) => index>=FrameCount-1?totalSeconds:(float)(Math.Max(0,index)/(double)fps);
+    public float FrameTime(int index) => index>=FrameCount-1?(float)ActualSeconds:(float)(Math.Max(0,index)/(double)fps);
     public float GrowthTime(float seconds) => (float)(21*(1-Math.Max(0,Math.Min(1,(double)seconds/ReverseSeconds))));
     // The main rotation speed depends only on secondsPerTurn, never film length.
-    public double RotationDegrees(double seconds) => Math.Max(0,Math.Min(ReverseSeconds,seconds))*DegreesPerSecond;
+    public double RotationDegrees(double seconds) => Math.Max(0,Math.Min(RevealStartSeconds,seconds))*DegreesPerSecond;
     public float DisplayRotationDegrees(float seconds)
     {
-        double t=Math.Max(0,Math.Min(totalSeconds,seconds)),angle=RotationDegrees(t)%360.0;
-        if(t<=ReverseSeconds)return (float)angle;
-        // Arbitrary clip lengths end at arbitrary orientations. Return by the
-        // shortest arc during the first second of the existing reveal phase.
-        double remaining=(angle+180.0)%360.0-180.0;
-        double u=Math.Min(1.0,(t-ReverseSeconds)/FaceAlignmentSeconds);
-        return (float)(remaining*(1-u*u*(3-2*u)));
+        // Finish the current revolution in its original direction and speed.
+        // Only stop once a full turn has naturally reached the front.
+        return seconds>=(float)RevealStartSeconds?0f:(float)(RotationDegrees(seconds)%360.0);
     }
     public string EncoderArguments(string folder,string video)
     {
@@ -63,11 +65,12 @@ public sealed class NarcissusRecordingOptions
             " -frames:v "+FrameCount+" -an "+codec+" "+Quote(video);
     }
     public string Description(int seed) => string.Format(CultureInfo.InvariantCulture,
-        "Narcissus: {0}x{1}, {2} fps, {3} frames, {4} seconds.\nFormat: {5}; MP4 quality: {6}.\n"+
+        "Narcissus: {0}x{1}, {2} fps, {3} frames, target {4} seconds; actual timeline {12:0.######} seconds; encoded {14:0.######} seconds.\nFormat: {5}; MP4 quality: {6}.\n"+
         "Original Unity colony generator, 38 landmark anchors.\nLayout seed: {7}\n"+
-        "0-{8}s: constant rotation at {9:0.###} seconds per turn ({10:0.###} degrees/second, {11:0.###} turns), reverse growth 21 to 0.\n"+
-        "{8}-{4}s: face reveal; align to front during the first {12:0.###} second(s), then hold front.\n",
-        Width,Height,fps,FrameCount,totalSeconds,format,quality,seed,ReverseSeconds,secondsPerTurn,DegreesPerSecond,TotalRotationTurns,FaceAlignmentSeconds);
+        "0-{8}s: reverse growth 21 to 0. Constant rotation at {9:0.###} seconds per turn ({10:0.###} degrees/second).\n"+
+        "Continue rotating until {13:0.######}s to complete {11} full turns; hold the blurred face while finishing the last turn.\n"+
+        "{13:0.######}-{12:0.######}s: hold front and reveal the face. No forced alignment or reversal.\n",
+        Width,Height,fps,FrameCount,totalSeconds,format,quality,seed,ReverseSeconds,secondsPerTurn,DegreesPerSecond,TotalRotationTurns,ActualSeconds,RevealStartSeconds,EncodedDurationSeconds);
     static string Quote(string s)=>"\""+s.Replace("\\","\\\\").Replace("\"","\\\"")+"\"";
 }
 #endif
