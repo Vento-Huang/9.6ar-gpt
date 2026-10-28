@@ -12,6 +12,8 @@ public sealed class NarcissusRecordingOptions
     public enum Quality { Standard, High, Maximum }
     public int totalSeconds=13, revealSeconds=3, fps=30;
     public float secondsPerTurn=10f;
+    public float rotationStopSeconds;
+    public bool useCustomRotationStop;
     public Resolution resolution=Resolution.FullHD1080p;
     public Format format=Format.MP4_H264;
     public Quality quality=Quality.High;
@@ -23,10 +25,15 @@ public sealed class NarcissusRecordingOptions
     // 7.3000001907) to avoid adding an unwanted video frame at decimal periods.
     public double RotationPeriodSeconds => (double)(decimal)secondsPerTurn;
     public double DegreesPerSecond => 360.0/RotationPeriodSeconds;
-    public int TotalRotationTurns => Math.Max(1,(int)Math.Ceiling(ReverseSeconds/RotationPeriodSeconds-1e-9));
-    public double RevealStartSeconds => TotalRotationTurns*RotationPeriodSeconds;
-    public double ExtraRotationSeconds => Math.Max(0,RevealStartSeconds-ReverseSeconds);
-    public double ActualSeconds => RevealStartSeconds+revealSeconds;
+    // Reveal keeps its existing timeline, independently of the new stop target.
+    public double RevealStartSeconds => Math.Max(1,TurnsAt(ReverseSeconds))*RotationPeriodSeconds;
+    public double RevealEndSeconds => RevealStartSeconds+revealSeconds;
+    // The flag preserves old serialized settings; editing the field opts in.
+    public double RotationStopTargetSeconds => useCustomRotationStop?(double)(decimal)rotationStopSeconds:RevealStartSeconds;
+    public int TotalRotationTurns => TurnsAt(RotationStopTargetSeconds);
+    public double RotationStopSeconds => TotalRotationTurns*RotationPeriodSeconds;
+    public double ExtraRotationSeconds => Math.Max(0,RotationStopSeconds-RotationStopTargetSeconds);
+    public double ActualSeconds => Math.Max(RevealEndSeconds,RotationStopSeconds);
     public int FrameCount => (int)Math.Ceiling(ActualSeconds*fps-1e-7);
     public double EncodedDurationSeconds => FrameCount/(double)fps;
     public int Crf => quality==Quality.Maximum?14:quality==Quality.Standard?22:18;
@@ -38,6 +45,8 @@ public sealed class NarcissusRecordingOptions
         revealSeconds=Math.Max(1,Math.Min(totalSeconds-1,revealSeconds));
         if(float.IsNaN(secondsPerTurn)||float.IsInfinity(secondsPerTurn)||secondsPerTurn<=0)secondsPerTurn=10f;
         secondsPerTurn=Math.Max(.1f,Math.Min(3600f,secondsPerTurn));
+        if(float.IsNaN(rotationStopSeconds)||float.IsInfinity(rotationStopSeconds)){rotationStopSeconds=0;useCustomRotationStop=false;}
+        rotationStopSeconds=Math.Max(0,Math.Min(7200f,rotationStopSeconds));
         if(fps!=24&&fps!=25&&fps!=30&&fps!=60)fps=30;
         if(!Enum.IsDefined(typeof(Resolution),resolution))resolution=Resolution.FullHD1080p;
         if(!Enum.IsDefined(typeof(Format),format))format=Format.MP4_H264;
@@ -47,13 +56,14 @@ public sealed class NarcissusRecordingOptions
     // same angular speed. Reserve the final reveal frame for the completed face.
     public float FrameTime(int index) => index>=FrameCount-1?(float)ActualSeconds:(float)(Math.Max(0,index)/(double)fps);
     public float GrowthTime(float seconds) => (float)(21*(1-Math.Max(0,Math.Min(1,(double)seconds/ReverseSeconds))));
+    int TurnsAt(double seconds) => Math.Max(0,(int)Math.Ceiling(seconds/RotationPeriodSeconds-1e-9));
     // The main rotation speed depends only on secondsPerTurn, never film length.
-    public double RotationDegrees(double seconds) => Math.Max(0,Math.Min(RevealStartSeconds,seconds))*DegreesPerSecond;
+    public double RotationDegrees(double seconds) => Math.Max(0,Math.Min(RotationStopSeconds,seconds))*DegreesPerSecond;
     public float DisplayRotationDegrees(float seconds)
     {
         // Finish the current revolution in its original direction and speed.
         // Only stop once a full turn has naturally reached the front.
-        return seconds>=(float)RevealStartSeconds?0f:(float)(RotationDegrees(seconds)%360.0);
+        return seconds>=(float)RotationStopSeconds?0f:(float)(RotationDegrees(seconds)%360.0);
     }
     public string EncoderArguments(string folder,string video)
     {
@@ -68,9 +78,9 @@ public sealed class NarcissusRecordingOptions
         "Narcissus: {0}x{1}, {2} fps, {3} frames, target {4} seconds; actual timeline {12:0.######} seconds; encoded {14:0.######} seconds.\nFormat: {5}; MP4 quality: {6}.\n"+
         "Original Unity colony generator, 38 landmark anchors.\nLayout seed: {7}\n"+
         "0-{8}s: reverse growth 21 to 0. Constant rotation at {9:0.###} seconds per turn ({10:0.###} degrees/second).\n"+
-        "Continue rotating until {13:0.######}s to complete {11} full turns; hold the blurred face while finishing the last turn.\n"+
-        "{13:0.######}-{12:0.######}s: hold front and reveal the face. No forced alignment or reversal.\n",
-        Width,Height,fps,FrameCount,totalSeconds,format,quality,seed,ReverseSeconds,secondsPerTurn,DegreesPerSecond,TotalRotationTurns,ActualSeconds,RevealStartSeconds,EncodedDurationSeconds);
+        "Rotation stop requested at {15:0.######}s; continue at the same speed until {16:0.######}s to complete {11} full turns.\n"+
+        "{13:0.######}-{17:0.######}s: reveal the face independently of rotation; hold the revealed face afterwards. No forced alignment or reversal.\n",
+        Width,Height,fps,FrameCount,totalSeconds,format,quality,seed,ReverseSeconds,secondsPerTurn,DegreesPerSecond,TotalRotationTurns,ActualSeconds,RevealStartSeconds,EncodedDurationSeconds,RotationStopTargetSeconds,RotationStopSeconds,RevealEndSeconds);
     static string Quote(string s)=>"\""+s.Replace("\\","\\\\").Replace("\"","\\\"")+"\"";
 }
 #endif

@@ -33,6 +33,51 @@ static class VerifyRecordingOptions
         o=Options(100,37.5f);Check(o.TotalRotationTurns==3&&Near(o.ActualSeconds,115.5),"Fractional period finishes the current full turn");
         o=Options(8,10,1);Check(Near(o.RevealStartSeconds,10)&&Near(o.ActualSeconds,11),"One-second reveal waits for completion too");
 
+        o=Options(100,10);
+        double originalRevealStart=o.RevealStartSeconds,originalRevealEnd=o.RevealEndSeconds;
+        o.rotationStopSeconds=105;o.useCustomRotationStop=true;o.Normalize();
+        Check(Near(o.RevealStartSeconds,100)&&Near(o.RevealEndSeconds,103),"Custom stop preserves original face-reveal interval");
+        Check(o.TotalRotationTurns==11&&Near(o.RotationStopSeconds,110)&&Near(o.ExtraRotationSeconds,5),"Stop at 105 completes current turn at 110");
+        Check(Near(o.ActualSeconds,110)&&o.FrameCount==3300,"Export includes rotation after reveal finishes");
+        Check(OrientationDistance(o.DisplayRotationDegrees(101),36)<.0001&&OrientationDistance(o.DisplayRotationDegrees(102),72)<.0001,"Face keeps rotating throughout reveal");
+        Check(OrientationDistance(o.DisplayRotationDegrees(103),108)<.0001&&OrientationDistance(o.DisplayRotationDegrees(109),324)<.0001,"Fully revealed face continues rotating until last turn ends");
+        Check(Near(o.DisplayRotationDegrees(110),0)&&Near(o.DisplayRotationDegrees(115),0),"Stop and hold front only after completing selected turn");
+        Check(Near(o.GrowthTime(98),0),"Later stop does not regrow flowers");
+        foreach(float stop in new[]{0f,90f,100f,102f,105f,112f,300f,7200f}){
+            o.rotationStopSeconds=stop;o.Normalize();
+            Check(Near(o.RevealStartSeconds,originalRevealStart)&&Near(o.RevealEndSeconds,originalRevealEnd),"Changing stop never shifts or stretches face reveal");
+            Check(o.RotationStopSeconds>=stop-1e-7&&o.RotationStopSeconds-stop<o.RotationPeriodSeconds+1e-7,"New stop finishes only the current turn");
+            Check(Near(o.RotationDegrees(o.RotationStopSeconds),o.TotalRotationTurns*360),"Custom stop ends on a full revolution");
+            Check(Near(o.ActualSeconds,Math.Max(originalRevealEnd,o.RotationStopSeconds)),"Export covers both reveal and stop");
+            Check(o.Description(1).Contains("reveal the face independently of rotation"),"Metadata describes independent timelines");
+        }
+        o.rotationStopSeconds=100;Check(Near(o.RotationStopSeconds,100)&&o.FrameCount==3090,"Stop already at front adds no extra turn");
+        o.rotationStopSeconds=90;Check(Near(o.DisplayRotationDegrees(95),0)&&Near(o.ActualSeconds,103),"Early stop still preserves full later reveal");
+        o.rotationStopSeconds=0;Check(o.TotalRotationTurns==0&&Near(o.DisplayRotationDegrees(5),0),"Zero stop leaves head still from start");
+        o.rotationStopSeconds=105;o.totalSeconds=200;
+        Check(Near(o.RotationStopTargetSeconds,105)&&Near(o.RotationStopSeconds,110)&&Near(o.RevealEndSeconds,203),"Edited stop remains independent when interview timing changes");
+        o=Options(100,10);o.rotationStopSeconds=999;
+        Check(Near(o.RotationStopSeconds,100)&&Near(o.ActualSeconds,103),"Unset custom-stop flag preserves old serialized behaviour");
+        foreach(float invalid in new[]{float.NaN,float.PositiveInfinity,float.NegativeInfinity}){
+            o.rotationStopSeconds=invalid;o.useCustomRotationStop=true;o.Normalize();
+            Check(!o.useCustomRotationStop&&Near(o.RotationStopSeconds,100),"Invalid stop falls back to original stop time");
+        }
+        o.rotationStopSeconds=99999;o.useCustomRotationStop=true;o.Normalize();Check(o.rotationStopSeconds==7200,"Custom stop upper bound");
+
+        foreach(float period in new[]{.1f,7.3f,10f,37.5f})foreach(float stop in new[]{0f,10f,102.5f,105f,112f})foreach(int fps in new[]{24,25,30,60}){
+            o=Options(100,period,3,fps);
+            double start=o.RevealStartSeconds,end=o.RevealEndSeconds;
+            o.rotationStopSeconds=stop;o.useCustomRotationStop=true;o.Normalize();
+            Check(Near(o.RevealStartSeconds,start)&&Near(o.RevealEndSeconds,end),"Custom stop preserves reveal for all periods and frame rates");
+            Check(o.RotationStopSeconds>=stop-1e-7&&o.RotationStopSeconds-stop<o.RotationPeriodSeconds+1e-7,"Fractional stop completes current forward turn");
+            Check(Near(o.DisplayRotationDegrees((float)o.RotationStopSeconds),0),"Custom stop reaches front for decimal periods too");
+            Check(o.EncodedDurationSeconds>=Math.Max(end,o.RotationStopSeconds)-1e-7,"Encoding retains both independent timelines");
+            if(stop>0){
+                double t=o.RotationStopSeconds*.8;
+                Check(Near(o.RotationDegrees(t),t*o.DegreesPerSecond,.001),"Custom stop never changes configured angular speed");
+            }
+        }
+
         var baseline=Options(3600,10);
         foreach(int target in new[]{2,13,60,83,100,103,3600})foreach(float period in new[]{.1f,5f,7.3f,10f,20f,37.5f,3600f})foreach(int fps in new[]{24,25,30,60}){
             o=Options(target,period,3,fps);baseline.secondsPerTurn=period;
