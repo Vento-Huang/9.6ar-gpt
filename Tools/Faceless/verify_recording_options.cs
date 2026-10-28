@@ -78,6 +78,59 @@ static class VerifyRecordingOptions
             }
         }
 
+        // User's fixed interview timeline: 146 s film, reveal at 71 s,
+        // fade for 3 s, complete the last forward turn at 120 s, then hold.
+        o=Options(146,10);
+        o.faceRevealStartSeconds=71;o.useExplicitRevealStart=true;
+        o.rotationStopSeconds=120;o.useCustomRotationStop=true;o.Normalize();
+        Check(Near(o.RevealStartSeconds,71)&&Near(o.RevealEndSeconds,74),"Explicit reveal starts at requested second, not the next front-facing turn");
+        Check(Near(o.ReverseSeconds,71)&&Near(o.GrowthTime(71),0),"Flowers disappear before the explicit face reveal");
+        Check(Near(o.RotationStopSeconds,120)&&Near(o.FinalHoldSeconds,26),"Stop at 120 and hold until 146");
+        Check(Near(o.ActualSeconds,146)&&o.FrameCount==4380&&o.TimingError==null,"Exact 146-second 30 fps export");
+        Check(OrientationDistance(o.DisplayRotationDegrees(72),72)<.0001&&OrientationDistance(o.DisplayRotationDegrees(119),324)<.0001,"Rotation continues during and after explicit face fade");
+        Check(Near(o.DisplayRotationDegrees(120),0)&&Near(o.DisplayRotationDegrees(130),0)&&Near(o.DisplayRotationDegrees(146),0),"Final 26 seconds remain facing front");
+        var preview=new NarcissusRecordingPreviewClock();
+        preview.Play(1000,146);Check(preview.IsPlaying&&Near(preview.Seconds,0),"Preview starts at beginning");
+        Check(preview.Advance(1071,146)&&Near(preview.Seconds,71),"Playback reaches exact face-reveal start");
+        preview.Pause();Check(!preview.Advance(2000,146)&&Near(preview.Seconds,71),"Paused preview does not advance");
+        preview.Play(2000,146);preview.Advance(2003,146);
+        Check(Near(preview.Seconds,74),"Resuming continues at same point without counting paused wall time");
+        preview.Seek(119,146);Check(!preview.IsPlaying&&Near(preview.Seconds,119),"Scrubbing pauses playback");
+        preview.Play(3000,146);preview.Advance(3001,146);
+        Check(Near(preview.Seconds,120)&&Near(o.DisplayRotationDegrees((float)preview.Seconds),0),"Playback reaches natural rotation stop");
+        preview.Advance(3027,146);Check(!preview.IsPlaying&&Near(preview.Seconds,146),"Playback includes final hold and pauses at film end");
+        preview.Play(4000,146);Check(preview.IsPlaying&&Near(preview.Seconds,0),"Play at film end restarts");
+        preview.Advance(4005,146);preview.Play(5000,146,true);Check(Near(preview.Seconds,0),"Replay explicitly returns to zero");
+        preview.Advance(5200,146);Check(!preview.IsPlaying&&Near(preview.Seconds,146),"Slow preview cannot advance beyond film end");
+        Check(o.FrameCount==4380&&Near(o.FrameTime(120*30),120),"Preview transport does not alter offline export frame count or clock");
+        foreach(int fps in new[]{24,25,30,60}){
+            o.fps=fps;
+            Check(o.FrameCount==146*fps&&Near(o.EncodedDurationSeconds,146),"Fixed total duration at every output frame rate");
+            Check(Near(o.FrameTime(o.FrameCount-1),146)&&Near(o.FrameTime(120*fps),120),"Hold and final endpoint are inside encoded sequence");
+        }
+        foreach(float stop in new[]{80f,100f,105f,120f,140f}){
+            o.rotationStopSeconds=stop;o.Normalize();
+            Check(Near(o.RevealStartSeconds,71)&&Near(o.RevealEndSeconds,74)&&Near(o.ActualSeconds,146),"Editing stop preserves both explicit reveal and fixed end");
+            Check(o.TimingError==null&&Near(o.FinalHoldSeconds,146-o.RotationStopSeconds),"Hold fills remaining film after complete turn");
+        }
+        o.rotationStopSeconds=145;o.Normalize();
+        Check(Near(o.RotationStopSeconds,150)&&o.TimingError!=null&&o.TimingError.Contains("150"),"Impossible last turn beyond fixed film end is reported");
+        Check(Near(o.ActualSeconds,146),"Invalid stop does not silently extend the fixed film");
+        o.rotationStopSeconds=120;o.totalSeconds=200;o.Normalize();
+        Check(Near(o.RevealStartSeconds,71)&&Near(o.RevealEndSeconds,74)&&Near(o.RotationStopSeconds,120)&&Near(o.FinalHoldSeconds,80),"Film end independent of reveal and stop");
+        o.secondsPerTurn=20;o.Normalize();
+        Check(Near(o.RevealStartSeconds,71)&&Near(o.RevealEndSeconds,74)&&Near(o.RotationStopSeconds,120),"Changing rotation speed does not move explicit reveal time");
+        o.faceRevealStartSeconds=71.25f;o.Normalize();
+        Check(Near(o.RevealStartSeconds,71.25)&&Near(o.RevealEndSeconds,74.25),"Fractional explicit reveal second supported");
+        o.faceRevealStartSeconds=0;o.Normalize();
+        Check(Near(o.GrowthTime(0),0)&&!float.IsNaN(o.GrowthTime(0))&&Near(o.RevealStartSeconds,0),"Immediate reveal avoids zero-length growth division");
+        o.faceRevealStartSeconds=999;o.Normalize();
+        Check(Near(o.RevealEndSeconds,200),"Full face fade fits within total film length");
+        foreach(float invalid in new[]{float.NaN,float.PositiveInfinity,float.NegativeInfinity}){
+            o.faceRevealStartSeconds=invalid;o.useExplicitRevealStart=true;o.Normalize();
+            Check(!o.useExplicitRevealStart,"Invalid explicit reveal start repaired");
+        }
+
         var baseline=Options(3600,10);
         foreach(int target in new[]{2,13,60,83,100,103,3600})foreach(float period in new[]{.1f,5f,7.3f,10f,20f,37.5f,3600f})foreach(int fps in new[]{24,25,30,60}){
             o=Options(target,period,3,fps);baseline.secondsPerTurn=period;
@@ -88,7 +141,7 @@ static class VerifyRecordingOptions
             Check(Near(o.ActualSeconds-o.RevealStartSeconds,o.revealSeconds),"Preserve full selected reveal duration");
             Check(o.EncodedDurationSeconds>=o.ActualSeconds-1e-7&&o.EncodedDurationSeconds-o.ActualSeconds<1.0/fps+1e-7,"Encoded duration differs by less than one frame");
             Check(Near(o.FrameTime(0),0)&&Near(o.FrameTime(o.FrameCount-1),o.ActualSeconds,.001),"First and last frames retain both endpoints");
-            Check(Near(o.GrowthTime(0),21)&&Near(o.GrowthTime(o.ReverseSeconds),0),"Original reverse growth endpoint unchanged");
+            Check(Near(o.GrowthTime(0),21)&&Near(o.GrowthTime((float)o.ReverseSeconds),0),"Original reverse growth endpoint unchanged");
             foreach(double fraction in new[]{0.0,.25,.5,.9,.99}){
                 double t=o.RevealStartSeconds*fraction;
                 Check(Near(o.RotationDegrees(t),baseline.RotationDegrees(t),.001),"Different interview lengths have the same rotation speed");

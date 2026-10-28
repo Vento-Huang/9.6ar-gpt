@@ -12,6 +12,8 @@ public sealed class NarcissusRecordingOptions
     public enum Quality { Standard, High, Maximum }
     public int totalSeconds=13, revealSeconds=3, fps=30;
     public float secondsPerTurn=10f;
+    public float faceRevealStartSeconds=10f;
+    public bool useExplicitRevealStart;
     public float rotationStopSeconds;
     public bool useCustomRotationStop;
     public Resolution resolution=Resolution.FullHD1080p;
@@ -20,20 +22,23 @@ public sealed class NarcissusRecordingOptions
 
     public int Width => resolution==Resolution.UHD4K?3840:resolution==Resolution.HD720p?1280:1920;
     public int Height => Width*9/16;
-    public int ReverseSeconds => totalSeconds-revealSeconds;
+    public double ReverseSeconds => useExplicitRevealStart?(double)(decimal)faceRevealStartSeconds:totalSeconds-revealSeconds;
     // Use the decimal value entered in the float field (e.g. 7.3 rather than
     // 7.3000001907) to avoid adding an unwanted video frame at decimal periods.
     public double RotationPeriodSeconds => (double)(decimal)secondsPerTurn;
     public double DegreesPerSecond => 360.0/RotationPeriodSeconds;
     // Reveal keeps its existing timeline, independently of the new stop target.
-    public double RevealStartSeconds => Math.Max(1,TurnsAt(ReverseSeconds))*RotationPeriodSeconds;
+    public double RevealStartSeconds => useExplicitRevealStart?(double)(decimal)faceRevealStartSeconds:Math.Max(1,TurnsAt(ReverseSeconds))*RotationPeriodSeconds;
     public double RevealEndSeconds => RevealStartSeconds+revealSeconds;
     // The flag preserves old serialized settings; editing the field opts in.
     public double RotationStopTargetSeconds => useCustomRotationStop?(double)(decimal)rotationStopSeconds:RevealStartSeconds;
     public int TotalRotationTurns => TurnsAt(RotationStopTargetSeconds);
     public double RotationStopSeconds => TotalRotationTurns*RotationPeriodSeconds;
     public double ExtraRotationSeconds => Math.Max(0,RotationStopSeconds-RotationStopTargetSeconds);
-    public double ActualSeconds => Math.Max(RevealEndSeconds,RotationStopSeconds);
+    public double ActualSeconds => useExplicitRevealStart?totalSeconds:Math.Max(RevealEndSeconds,RotationStopSeconds);
+    public double FinalHoldSeconds => Math.Max(0,ActualSeconds-Math.Max(RevealEndSeconds,RotationStopSeconds));
+    public string TimingError => useExplicitRevealStart&&RotationStopSeconds>totalSeconds+1e-7
+        ?string.Format(CultureInfo.InvariantCulture,"Rotation finishes at {0:0.###} s, after the {1} s video ends. Choose an earlier stop target, a shorter turn period, or a longer total duration.",RotationStopSeconds,totalSeconds):null;
     public int FrameCount => (int)Math.Ceiling(ActualSeconds*fps-1e-7);
     public double EncodedDurationSeconds => FrameCount/(double)fps;
     public int Crf => quality==Quality.Maximum?14:quality==Quality.Standard?22:18;
@@ -43,6 +48,8 @@ public sealed class NarcissusRecordingOptions
     {
         totalSeconds=Math.Max(2,Math.Min(3600,totalSeconds));
         revealSeconds=Math.Max(1,Math.Min(totalSeconds-1,revealSeconds));
+        if(float.IsNaN(faceRevealStartSeconds)||float.IsInfinity(faceRevealStartSeconds)){faceRevealStartSeconds=10;useExplicitRevealStart=false;}
+        faceRevealStartSeconds=Math.Max(0,Math.Min(totalSeconds-revealSeconds,faceRevealStartSeconds));
         if(float.IsNaN(secondsPerTurn)||float.IsInfinity(secondsPerTurn)||secondsPerTurn<=0)secondsPerTurn=10f;
         secondsPerTurn=Math.Max(.1f,Math.Min(3600f,secondsPerTurn));
         if(float.IsNaN(rotationStopSeconds)||float.IsInfinity(rotationStopSeconds)){rotationStopSeconds=0;useCustomRotationStop=false;}
@@ -55,7 +62,7 @@ public sealed class NarcissusRecordingOptions
     // Keep the true encoded frame cadence so different clip lengths have the
     // same angular speed. Reserve the final reveal frame for the completed face.
     public float FrameTime(int index) => index>=FrameCount-1?(float)ActualSeconds:(float)(Math.Max(0,index)/(double)fps);
-    public float GrowthTime(float seconds) => (float)(21*(1-Math.Max(0,Math.Min(1,(double)seconds/ReverseSeconds))));
+    public float GrowthTime(float seconds) => ReverseSeconds<=0?0:(float)(21*(1-Math.Max(0,Math.Min(1,(double)seconds/ReverseSeconds))));
     int TurnsAt(double seconds) => Math.Max(0,(int)Math.Ceiling(seconds/RotationPeriodSeconds-1e-9));
     // The main rotation speed depends only on secondsPerTurn, never film length.
     public double RotationDegrees(double seconds) => Math.Max(0,Math.Min(RotationStopSeconds,seconds))*DegreesPerSecond;
@@ -79,8 +86,33 @@ public sealed class NarcissusRecordingOptions
         "Original Unity colony generator, 38 landmark anchors.\nLayout seed: {7}\n"+
         "0-{8}s: reverse growth 21 to 0. Constant rotation at {9:0.###} seconds per turn ({10:0.###} degrees/second).\n"+
         "Rotation stop requested at {15:0.######}s; continue at the same speed until {16:0.######}s to complete {11} full turns.\n"+
-        "{13:0.######}-{17:0.######}s: reveal the face independently of rotation; hold the revealed face afterwards. No forced alignment or reversal.\n",
-        Width,Height,fps,FrameCount,totalSeconds,format,quality,seed,ReverseSeconds,secondsPerTurn,DegreesPerSecond,TotalRotationTurns,ActualSeconds,RevealStartSeconds,EncodedDurationSeconds,RotationStopTargetSeconds,RotationStopSeconds,RevealEndSeconds);
+        "{13:0.######}-{17:0.######}s: reveal the face independently of rotation; hold the revealed face afterwards. No forced alignment or reversal.\n"+
+        "Final still face hold: {18:0.######} seconds. Timeline mode: {19}.\n",
+        Width,Height,fps,FrameCount,totalSeconds,format,quality,seed,ReverseSeconds,secondsPerTurn,DegreesPerSecond,TotalRotationTurns,ActualSeconds,RevealStartSeconds,EncodedDurationSeconds,RotationStopTargetSeconds,RotationStopSeconds,RevealEndSeconds,FinalHoldSeconds,useExplicitRevealStart?"explicit reveal start, fixed total duration":"legacy automatic reveal start");
     static string Quote(string s)=>"\""+s.Replace("\\","\\\\").Replace("\"","\\\"")+"\"";
+}
+
+/// <summary>Editor preview transport; never changes the offline export clock.</summary>
+public sealed class NarcissusRecordingPreviewClock
+{
+    public double Seconds {get;private set;}
+    public bool IsPlaying {get;private set;}
+    double lastClock;
+    public void Pause(){IsPlaying=false;}
+    public void Seek(double seconds,double duration){Pause();Seconds=Math.Max(0,Math.Min(duration,seconds));}
+    public void Play(double now,double duration,bool fromStart=false)
+    {
+        if(fromStart||Seconds>=duration)Seconds=0;
+        lastClock=now;IsPlaying=duration>0;
+    }
+    public bool Advance(double now,double duration)
+    {
+        if(!IsPlaying)return false;
+        double elapsed=Math.Max(0,now-lastClock);lastClock=now;
+        double next=Math.Min(duration,Seconds+elapsed);
+        bool changed=next!=Seconds;Seconds=next;
+        if(Seconds>=duration)Pause();
+        return changed;
+    }
 }
 #endif

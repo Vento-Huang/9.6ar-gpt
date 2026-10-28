@@ -20,7 +20,10 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
     [SerializeField] string modelPath,calibrationPath,ffmpegPath;
     [SerializeField] NarcissusRecordingOptions options=new NarcissusRecordingOptions();
     string outputDirectory,status="Choose the supplied GLB and its calibration JSON.";
-    MidFaceEraseMask sceneSettings,settings; int seed=1,frameIndex; float previewTime; bool exporting,encoding;
+    MidFaceEraseMask sceneSettings,settings; int seed=1,frameIndex; bool exporting,encoding;
+    readonly NarcissusRecordingPreviewClock previewClock=new NarcissusRecordingPreviewClock();
+    double lastPreviewRenderAt;
+    float previewTime {get=>(float)previewClock.Seconds;set=>previewClock.Seek(value,options.ActualSeconds);}
     Vector2 scroll;
     GameObject settingsObject,layerObject; RawImage layer;
     Calibration calibration; FacelessFaceRenderer face; NarcissusFaceGrowth growth;
@@ -50,9 +53,16 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         EditorGUILayout.LabelField(Path.GetFileName(calibrationPath??""));
         EditorGUILayout.LabelField("Film settings / 视频设置",EditorStyles.boldLabel);
         EditorGUI.BeginChangeCheck();
-        options.totalSeconds=EditorGUILayout.DelayedIntField("Target seconds / 目标时长",options.totalSeconds);
-        options.revealSeconds=EditorGUILayout.DelayedIntField("Face reveal seconds / 露脸",options.revealSeconds);
+        options.totalSeconds=EditorGUILayout.DelayedIntField("Total seconds / 总时长",options.totalSeconds);
+        options.revealSeconds=EditorGUILayout.DelayedIntField("Fade seconds / 渐显用时",options.revealSeconds);
         options.secondsPerTurn=EditorGUILayout.DelayedFloatField("Seconds per turn / 每圈秒数",options.secondsPerTurn);
+        options.Normalize();
+        EditorGUI.BeginChangeCheck();
+        float revealAt=EditorGUILayout.DelayedFloatField("Reveal at / 开始露脸秒",(float)options.RevealStartSeconds);
+        if(EditorGUI.EndChangeCheck()){
+            options.faceRevealStartSeconds=revealAt;options.useExplicitRevealStart=true;
+            if(!options.useCustomRotationStop){options.rotationStopSeconds=revealAt;options.useCustomRotationStop=true;}
+        }
         options.Normalize();
         EditorGUI.BeginChangeCheck();
         float stopTarget=EditorGUILayout.DelayedFloatField("Stop at / 停转目标秒",(float)options.RotationStopTargetSeconds);
@@ -66,20 +76,29 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         if(EditorGUI.EndChangeCheck()){previewTime=Mathf.Min(previewTime,(float)options.ActualSeconds);if(output!=null)Guard(()=>RenderFrame(previewTime));}
         EditorGUILayout.LabelField("Face reveal / 真实脸渐显",options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s");
         EditorGUILayout.LabelField("Rotation ends / 实际停转",options.RotationStopSeconds.ToString("0.###")+" s");
+        EditorGUILayout.LabelField("Final hold / 最后保持",options.FinalHoldSeconds.ToString("0.###")+" s");
         EditorGUILayout.LabelField("Actual seconds / 实际时长",options.EncodedDurationSeconds.ToString("0.###")+" s");
+        if(options.TimingError!=null)EditorGUILayout.HelpBox(options.TimingError,MessageType.Error);
         EditorGUILayout.HelpBox("0–"+options.ReverseSeconds+" s: reverse growth. Reveal the real face at "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s. Rotation is independent: "+options.secondsPerTurn.ToString("0.##")+" s/turn until "+options.RotationStopSeconds.ToString("0.###")+" s ("+options.TotalRotationTurns+" full turns).\nStop target / 停转目标: "+options.RotationStopTargetSeconds.ToString("0.###")+" s; finish current turn / 补完本圈: +"+options.ExtraRotationSeconds.ToString("0.###")+" s. Actual export / 实际导出: "+options.EncodedDurationSeconds.ToString("0.###")+" s · "+options.Width+" × "+options.Height+" · "+options.fps+" fps · "+options.FrameCount+" frames.",MessageType.Info);
         if(options.format!=NarcissusRecordingOptions.Format.PNG_Sequence){
             if(GUILayout.Button("Choose ffmpeg (optional)")){string p=EditorUtility.OpenFilePanel("Choose ffmpeg executable","","");if(!string.IsNullOrEmpty(p))ffmpegPath=p;}
             if(FindEncoder()==null)EditorGUILayout.HelpBox("ffmpeg not found. Export will save PNG frames only; MP4/MOV needs ffmpeg. You can select its executable above.",MessageType.Info);
         }
         if(GUILayout.Button("3 · Build / rebuild preview"))Guard(Build);
-        EditorGUI.BeginDisabledGroup(output==null);
+        EditorGUI.BeginDisabledGroup(output==null||options.TimingError!=null);
         EditorGUI.BeginChangeCheck();float time=EditorGUILayout.Slider("Seconds",previewTime,0,(float)options.ActualSeconds);
         if(EditorGUI.EndChangeCheck()){previewTime=time;Guard(()=>RenderFrame(previewTime));}
+        EditorGUILayout.BeginHorizontal();
+        if(GUILayout.Button(previewClock.IsPlaying?"Pause / 暂停":"Play / 播放")){
+            if(previewClock.IsPlaying)previewClock.Pause();else Guard(()=>PlayPreview(false));
+        }
+        if(GUILayout.Button("Replay / 从头播放"))Guard(()=>PlayPreview(true));
+        EditorGUILayout.EndHorizontal();
         if(GUILayout.Button("4 · Export "+options.EncodedDurationSeconds.ToString("0.###")+"-second film")){
             string folder=EditorUtility.OpenFolderPanel("Choose export parent folder","","");
             if(!string.IsNullOrEmpty(folder)){
                 Guard(()=>{
+                    previewClock.Pause();
                     outputDirectory=Path.Combine(folder,"Narcissus-"+DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
                     Directory.CreateDirectory(outputDirectory);frameIndex=0;exporting=true;status="Exporting frames…";
                     File.WriteAllText(Path.Combine(outputDirectory,"render-info.txt"),options.Description(seed));
@@ -92,10 +111,17 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         if(output!=null){Rect r=GUILayoutUtility.GetAspectRect(16f/9f);EditorGUI.DrawPreviewTexture(r,output,null,ScaleMode.ScaleToFit);}
         EditorGUILayout.EndScrollView();
     }
-    void Guard(Action action){try{action();}catch(Exception e){exporting=false;status=e.Message;UnityEngine.Debug.LogException(e);}}
+    void Guard(Action action){try{action();}catch(Exception e){previewClock.Pause();exporting=false;status=e.Message;UnityEngine.Debug.LogException(e);}}
+    void PlayPreview(bool fromStart)
+    {
+        double now=EditorApplication.timeSinceStartup;
+        previewClock.Play(now,options.ActualSeconds,fromStart);lastPreviewRenderAt=now;
+        RenderFrame(previewTime);
+    }
     void Build()
     {
         if(EditorApplication.isPlaying)throw new InvalidOperationException("Stop Play mode before opening the offline recorder.");
+        if(options.TimingError!=null)throw new InvalidOperationException(options.TimingError);
         if(!File.Exists(modelPath)||!File.Exists(calibrationPath))throw new InvalidOperationException("Select both the GLB and calibration JSON.");
         Release();calibration=JsonUtility.FromJson<Calibration>(File.ReadAllText(calibrationPath));
         if(calibration.landmarks==null||calibration.landmarks.Length!=468||calibration.referenceHalfHeight<=0)throw new InvalidDataException("Calibration requires 468 landmarks.");
@@ -181,6 +207,15 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
     }
     void Tick()
     {
+        if(previewClock.IsPlaying&&output!=null&&!exporting&&!encoding){
+            double now=EditorApplication.timeSinceStartup;
+            // Limit preview redraws to 30 Hz, retaining real elapsed time if a
+            // heavy model renders more slowly. Export still renders every frame.
+            if(now-lastPreviewRenderAt>=1.0/30){
+                lastPreviewRenderAt=now;
+                if(previewClock.Advance(now,options.ActualSeconds))Guard(()=>RenderFrame(previewTime));
+            }
+        }
         if(!exporting)return;
         Guard(()=>{
             // Include both exact endpoints: the final encoded frame is the full face.
@@ -212,7 +247,7 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
     static void Draw(RenderTexture target,Action draw){var old=RenderTexture.active;bool srgb=GL.sRGBWrite;GL.PushMatrix();try{Graphics.SetRenderTarget(target);GL.sRGBWrite=target.sRGB;GL.Clear(true,true,new Color(.025f,.03f,.035f,1));draw();}finally{GL.PopMatrix();RenderTexture.active=old;GL.sRGBWrite=srgb;}}
     void Release()
     {
-        exporting=false;growth?.Dispose();growth=null;face?.Dispose();face=null;
+        previewClock.Pause();exporting=false;growth?.Dispose();growth=null;face?.Dispose();face=null;
         foreach(var r in new[]{raw,skin,mask,output})if(r!=null){r.Release();Object.DestroyImmediate(r);}raw=skin=mask=output=null;
         foreach(var o in new Object[]{portrait,colony,pollen,colour,readback,headMaterial,plantMaterial,settingsObject,layerObject})if(o!=null)Object.DestroyImmediate(o);
         portrait=colony=pollen=null;colour=readback=null;headMaterial=plantMaterial=null;settingsObject=layerObject=null;
