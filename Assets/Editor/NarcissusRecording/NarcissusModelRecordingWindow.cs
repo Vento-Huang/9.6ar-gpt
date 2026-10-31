@@ -16,6 +16,9 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         public string modelSha256; public Vector2[] landmarks;
         public float referenceCenterY=.49f,referenceHalfHeight=.54f;
         public float displayCenterY=.76f,displayHalfHeight=.32f,surfaceFrontZ=.205f;
+        // Optional offline-only boundary, authored for this exact model hash.
+        public Vector2[] recordingSkinOutline;
+        public float recordingSkinFeather=.003f;
     }
     [SerializeField] string modelPath,calibrationPath,ffmpegPath;
     [SerializeField] NarcissusRecordingOptions options=new NarcissusRecordingOptions();
@@ -27,7 +30,7 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
     Vector2 scroll;
     GameObject settingsObject,layerObject; RawImage layer;
     Calibration calibration; FacelessFaceRenderer face; NarcissusFaceGrowth growth;
-    Mesh portrait,colony,pollen; Texture2D colour,readback;
+    Mesh portrait,colony,pollen; Texture2D colour,readback,recordingSkinCoverage;
     Material headMaterial,plantMaterial; RenderTexture raw,skin,mask,output;
     Vector2[] landmarks; Vector3[] colonyVertices,pollenVertices;
     const int ReferenceSize=1024;
@@ -105,6 +108,7 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
                     outputDirectory=Path.Combine(folder,"Narcissus-"+DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
                     Directory.CreateDirectory(outputDirectory);frameIndex=0;exporting=true;status="Exporting frames…";
                     File.WriteAllText(Path.Combine(outputDirectory,"render-info.txt"),options.Description(seed));
+                    File.AppendAllText(Path.Combine(outputDirectory,"render-info.txt"),"Recording skin boundary: "+(recordingSkinCoverage!=null?"model-specific, inward feather; hair colour and geometry preserved":"original unrestricted projection")+".\n");
                 });
             }
         }
@@ -154,11 +158,24 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
             face.SeekPresentationTime(settings.entryDurationSeconds);face.ApplyComposite(face.Composite);face.Composite.SetFloat("_OverlayOnly",0);
             Graphics.Blit(raw,skin,face.Composite);face.Composite.SetFloat("_RecordingMaskOnly",1);Graphics.Blit(raw,mask,face.Composite);face.Composite.SetFloat("_RecordingMaskOnly",0);
             headMaterial.SetTexture("_RecordedSkin",skin);headMaterial.SetTexture("_RecordedMask",mask);
+            BuildRecordingSkinCoverage();
             growth=new NarcissusFaceGrowth(settings);growth.UpdateRecording(face,layer,ReferenceSize,ReferenceSize,21,21);
             if(growth.RecordingMesh==null)throw new InvalidOperationException("The original flower generator did not produce a mesh. Check Console.");
             colony=Object.Instantiate(growth.RecordingMesh);pollen=Object.Instantiate(growth.RecordingPollenMesh);colony.hideFlags=pollen.hideFlags=HideFlags.HideAndDontSave;
-            RenderFrame(previewTime);status="Preview ready. Flowers end "+options.ReverseSeconds+" s; "+(options.keepFaceBlurred?"real face disabled, blurred skin through the final frame":"face reveal "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s")+"; rotation ends "+options.RotationStopSeconds.ToString("0.###")+" s. Review the preview before export.";
+            RenderFrame(previewTime);status="Preview ready. Flowers end "+options.ReverseSeconds+" s; "+(options.keepFaceBlurred?"real face disabled, blurred skin through the final frame":"face reveal "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s")+"; rotation ends "+options.RotationStopSeconds.ToString("0.###")+" s. "+(recordingSkinCoverage!=null?"Model hair protection / 模型头发保护已启用。 ":"")+"Review the preview before export.";
         }catch{Release();throw;}
+    }
+    void BuildRecordingSkinCoverage()
+    {
+        var outline=calibration.recordingSkinOutline;
+        if(outline==null||outline.Length==0){headMaterial.SetTexture("_RecordingSkinCoverage",Texture2D.whiteTexture);return;}
+        var xy=new float[outline.Length*2];
+        for(int i=0;i<outline.Length;i++){xy[i*2]=outline[i].x;xy[i*2+1]=outline[i].y;}
+        byte[] weights=NarcissusRecordingSkinCoverage.Build(ReferenceSize,ReferenceSize,xy,calibration.referenceCenterY,calibration.referenceHalfHeight,calibration.recordingSkinFeather);
+        var pixels=new Color32[weights.Length];for(int i=0;i<pixels.Length;i++)pixels[i]=new Color32(weights[i],weights[i],weights[i],255);
+        recordingSkinCoverage=new Texture2D(ReferenceSize,ReferenceSize,TextureFormat.RGBA32,false,true){name="Offline model skin boundary",hideFlags=HideFlags.HideAndDontSave,wrapMode=TextureWrapMode.Clamp,filterMode=FilterMode.Bilinear};
+        recordingSkinCoverage.SetPixels32(pixels);recordingSkinCoverage.Apply(false,true);
+        headMaterial.SetTexture("_RecordingSkinCoverage",recordingSkinCoverage);
     }
     void RenderFrame(float seconds)
     {
@@ -252,8 +269,8 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
     {
         previewClock.Pause();exporting=false;growth?.Dispose();growth=null;face?.Dispose();face=null;
         foreach(var r in new[]{raw,skin,mask,output})if(r!=null){r.Release();Object.DestroyImmediate(r);}raw=skin=mask=output=null;
-        foreach(var o in new Object[]{portrait,colony,pollen,colour,readback,headMaterial,plantMaterial,settingsObject,layerObject})if(o!=null)Object.DestroyImmediate(o);
-        portrait=colony=pollen=null;colour=readback=null;headMaterial=plantMaterial=null;settingsObject=layerObject=null;
+        foreach(var o in new Object[]{portrait,colony,pollen,colour,readback,recordingSkinCoverage,headMaterial,plantMaterial,settingsObject,layerObject})if(o!=null)Object.DestroyImmediate(o);
+        portrait=colony=pollen=null;colour=readback=recordingSkinCoverage=null;headMaterial=plantMaterial=null;settingsObject=layerObject=null;
     }
 }
 #endif
