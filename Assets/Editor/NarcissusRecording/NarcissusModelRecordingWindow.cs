@@ -53,12 +53,15 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         EditorGUILayout.LabelField(Path.GetFileName(calibrationPath??""));
         EditorGUILayout.LabelField("Film settings / 视频设置",EditorStyles.boldLabel);
         EditorGUI.BeginChangeCheck();
+        options.keepFaceBlurred=!EditorGUILayout.Toggle("Reveal real face / 显示真实脸",!options.keepFaceBlurred);
         options.totalSeconds=EditorGUILayout.DelayedIntField("Total seconds / 总时长",options.totalSeconds);
+        EditorGUI.BeginDisabledGroup(options.keepFaceBlurred);
         options.revealSeconds=EditorGUILayout.DelayedIntField("Fade seconds / 渐显用时",options.revealSeconds);
+        EditorGUI.EndDisabledGroup();
         options.secondsPerTurn=EditorGUILayout.DelayedFloatField("Seconds per turn / 每圈秒数",options.secondsPerTurn);
         options.Normalize();
         EditorGUI.BeginChangeCheck();
-        float revealAt=EditorGUILayout.DelayedFloatField("Reveal at / 开始露脸秒",(float)options.RevealStartSeconds);
+        float revealAt=EditorGUILayout.DelayedFloatField(options.keepFaceBlurred?"Flowers end at / 花朵消失秒":"Reveal at / 开始露脸秒",(float)(options.keepFaceBlurred?options.ReverseSeconds:options.RevealStartSeconds));
         if(EditorGUI.EndChangeCheck()){
             options.faceRevealStartSeconds=revealAt;options.useExplicitRevealStart=true;
             if(!options.useCustomRotationStop){options.rotationStopSeconds=revealAt;options.useCustomRotationStop=true;}
@@ -74,12 +77,12 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
             options.quality=(NarcissusRecordingOptions.Quality)EditorGUILayout.EnumPopup("MP4 quality / 画质",options.quality);
         options.Normalize();
         if(EditorGUI.EndChangeCheck()){previewTime=Mathf.Min(previewTime,(float)options.ActualSeconds);if(output!=null)Guard(()=>RenderFrame(previewTime));}
-        EditorGUILayout.LabelField("Face reveal / 真实脸渐显",options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s");
+        EditorGUILayout.LabelField("Face reveal / 真实脸渐显",options.keepFaceBlurred?"Off / 关闭，保持模糊脸":options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s");
         EditorGUILayout.LabelField("Rotation ends / 实际停转",options.RotationStopSeconds.ToString("0.###")+" s");
         EditorGUILayout.LabelField("Final hold / 最后保持",options.FinalHoldSeconds.ToString("0.###")+" s");
         EditorGUILayout.LabelField("Actual seconds / 实际时长",options.EncodedDurationSeconds.ToString("0.###")+" s");
         if(options.TimingError!=null)EditorGUILayout.HelpBox(options.TimingError,MessageType.Error);
-        EditorGUILayout.HelpBox("0–"+options.ReverseSeconds+" s: reverse growth. Reveal the real face at "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s. Rotation is independent: "+options.secondsPerTurn.ToString("0.##")+" s/turn until "+options.RotationStopSeconds.ToString("0.###")+" s ("+options.TotalRotationTurns+" full turns).\nStop target / 停转目标: "+options.RotationStopTargetSeconds.ToString("0.###")+" s; finish current turn / 补完本圈: +"+options.ExtraRotationSeconds.ToString("0.###")+" s. Actual export / 实际导出: "+options.EncodedDurationSeconds.ToString("0.###")+" s · "+options.Width+" × "+options.Height+" · "+options.fps+" fps · "+options.FrameCount+" frames.",MessageType.Info);
+        EditorGUILayout.HelpBox("0–"+options.ReverseSeconds+" s: reverse growth. "+(options.keepFaceBlurred?"Real face disabled / 不显示真实脸：花朵消失后保持模糊脸直到片尾。 ":"Reveal the real face at "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s. ")+"Rotation is independent: "+options.secondsPerTurn.ToString("0.##")+" s/turn until "+options.RotationStopSeconds.ToString("0.###")+" s ("+options.TotalRotationTurns+" full turns).\nStop target / 停转目标: "+options.RotationStopTargetSeconds.ToString("0.###")+" s; finish current turn / 补完本圈: +"+options.ExtraRotationSeconds.ToString("0.###")+" s. Actual export / 实际导出: "+options.EncodedDurationSeconds.ToString("0.###")+" s · "+options.Width+" × "+options.Height+" · "+options.fps+" fps · "+options.FrameCount+" frames.",MessageType.Info);
         if(options.format!=NarcissusRecordingOptions.Format.PNG_Sequence){
             if(GUILayout.Button("Choose ffmpeg (optional)")){string p=EditorUtility.OpenFilePanel("Choose ffmpeg executable","","");if(!string.IsNullOrEmpty(p))ffmpegPath=p;}
             if(FindEncoder()==null)EditorGUILayout.HelpBox("ffmpeg not found. Export will save PNG frames only; MP4/MOV needs ffmpeg. You can select its executable above.",MessageType.Info);
@@ -154,13 +157,13 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
             growth=new NarcissusFaceGrowth(settings);growth.UpdateRecording(face,layer,ReferenceSize,ReferenceSize,21,21);
             if(growth.RecordingMesh==null)throw new InvalidOperationException("The original flower generator did not produce a mesh. Check Console.");
             colony=Object.Instantiate(growth.RecordingMesh);pollen=Object.Instantiate(growth.RecordingPollenMesh);colony.hideFlags=pollen.hideFlags=HideFlags.HideAndDontSave;
-            RenderFrame(previewTime);status="Preview ready. Flowers end "+options.ReverseSeconds+" s; face reveal "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s; rotation ends "+options.RotationStopSeconds.ToString("0.###")+" s. Review the reveal while rotating before export.";
+            RenderFrame(previewTime);status="Preview ready. Flowers end "+options.ReverseSeconds+" s; "+(options.keepFaceBlurred?"real face disabled, blurred skin through the final frame":"face reveal "+options.RevealStartSeconds.ToString("0.###")+"–"+options.RevealEndSeconds.ToString("0.###")+" s")+"; rotation ends "+options.RotationStopSeconds.ToString("0.###")+" s. Review the preview before export.";
         }catch{Release();throw;}
     }
     void RenderFrame(float seconds)
     {
         EnsureOutput();
-        float t=Mathf.Clamp(seconds,0,(float)options.ActualSeconds),g=options.GrowthTime(t),reveal=NarcissusModel.Ease(t,(float)options.RevealStartSeconds,(float)options.RevealEndSeconds);
+        float t=Mathf.Clamp(seconds,0,(float)options.ActualSeconds),g=options.GrowthTime(t),reveal=options.FaceRevealAmount(t);
         Vector3 pivot=new Vector3(0,calibration.displayCenterY,0);
         float angle=options.DisplayRotationDegrees(t);
         Matrix4x4 rotation=Matrix4x4.Translate(pivot)*Matrix4x4.Rotate(Quaternion.Euler(0,angle,0))*Matrix4x4.Translate(-pivot);
@@ -218,7 +221,7 @@ public sealed class NarcissusModelRecordingWindow : EditorWindow
         }
         if(!exporting)return;
         Guard(()=>{
-            // Include both exact endpoints: the final encoded frame is the full face.
+            // Include both exact endpoints, respecting the selected face mode.
             float seconds=options.FrameTime(frameIndex);RenderFrame(seconds);
             var previous=RenderTexture.active;try{RenderTexture.active=output;readback.ReadPixels(new Rect(0,0,options.Width,options.Height),0,0);readback.Apply(false);}finally{RenderTexture.active=previous;}
             File.WriteAllBytes(Path.Combine(outputDirectory,"frame_"+frameIndex.ToString("D5")+".png"),readback.EncodeToPNG());

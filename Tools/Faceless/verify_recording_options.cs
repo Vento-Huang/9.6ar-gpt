@@ -16,6 +16,44 @@ static class VerifyRecordingOptions
     }
     static void Main(string[] args)
     {
+        // Photographer: reverse flowers, but never restore facial colour or
+        // geometry, even on the last exported frame or after a preview seek.
+        var hidden=Options(146,10);
+        Check(!hidden.keepFaceBlurred,"Existing recordings reveal the face by default");
+        var oldSettings=JsonSerializer.Deserialize<NarcissusRecordingOptions>("{\"totalSeconds\":146}",new JsonSerializerOptions{IncludeFields=true});
+        Check(!oldSettings.keepFaceBlurred,"Settings saved before face-mode toggle retain reveal behaviour");
+        hidden.keepFaceBlurred=true;hidden.useExplicitRevealStart=true;hidden.faceRevealStartSeconds=71;
+        hidden.useCustomRotationStop=true;hidden.rotationStopSeconds=120;hidden.Normalize();
+        Check(Near(hidden.ReverseSeconds,71)&&Near(hidden.GrowthTime(0),21)&&Near(hidden.GrowthTime(71),0),"Blur mode retains original reverse flower endpoints");
+        Check(Near(hidden.ActualSeconds,146)&&Near(hidden.FinalHoldSeconds,26)&&hidden.TimingError==null,"Blur mode preserves fixed film end and independent rotation hold");
+        foreach(int fps in new[]{24,25,30,60}){
+            hidden.fps=fps;
+            Check(hidden.FrameCount==146*fps&&Near(hidden.EncodedDurationSeconds,146),"Blur mode exports selected total length at every frame rate");
+            for(int frame=0;frame<hidden.FrameCount;frame++)
+                Check(hidden.FaceRevealAmount(hidden.FrameTime(frame))==0f,"Every exported frame keeps erased geometry and blurred skin, including final endpoint");
+        }
+        foreach(float time in new[]{146f,71f,0f,74f,120f,145.99f,200f})
+            Check(hidden.FaceRevealAmount(time)==0f,"Nonsequential preview seeks never reveal the face");
+        Check(OrientationDistance(hidden.DisplayRotationDegrees(119),324)<.0001&&Near(hidden.DisplayRotationDegrees(120),0),"Blurred face keeps constant forward rotation until full-turn stop");
+        Check(Near(hidden.GrowthTime(146),0),"Flowers remain gone at blurred film end");
+        Check(hidden.Description(1).Contains("real face disabled")&&hidden.Description(1).Contains("no face reveal")&&!hidden.Description(1).Contains("reveal the face independently"),"Export metadata accurately records no-reveal mode");
+        hidden.faceRevealStartSeconds=145;hidden.Normalize();
+        Check(Near(hidden.ReverseSeconds,145)&&Near(hidden.FinalHoldSeconds,1),"No-reveal mode does not reserve an unused fade interval");
+        hidden.faceRevealStartSeconds=146;hidden.Normalize();
+        Check(Near(hidden.GrowthTime(hidden.FrameTime(hidden.FrameCount-1)),0)&&Near(hidden.FinalHoldSeconds,0),"Flowers may finish disappearing on final frame without revealing face");
+        hidden.faceRevealStartSeconds=0;hidden.Normalize();
+        Check(Near(hidden.GrowthTime(0),0)&&hidden.FaceRevealAmount(0)==0f,"Zero disappearance time immediately starts with blurred face and no flowers");
+        hidden.rotationStopSeconds=145;hidden.Normalize();
+        Check(hidden.TimingError!=null&&Near(hidden.ActualSeconds,146),"Blur mode reports full-turn stop beyond fixed end without extending film");
+        hidden=Options(100,10);hidden.keepFaceBlurred=true;hidden.Normalize();
+        Check(Near(hidden.ReverseSeconds,97)&&Near(hidden.RotationStopSeconds,100)&&Near(hidden.ActualSeconds,100),"Disabling reveal on legacy settings retains flowers and rotation but removes extra face fade");
+        hidden.secondsPerTurn=7.3f;hidden.Normalize();
+        Check(hidden.TimingError!=null,"Legacy blur settings validate stop beyond fixed film end too");
+        hidden=Options(146,10);hidden.useExplicitRevealStart=true;hidden.faceRevealStartSeconds=71;hidden.Normalize();
+        Check(Near(hidden.FaceRevealAmount(70),0)&&Near(hidden.FaceRevealAmount(71),0)&&Near(hidden.FaceRevealAmount(72.5f),.5)&&Near(hidden.FaceRevealAmount(74),1)&&Near(hidden.FaceRevealAmount(146),1),"Enabled reveal keeps original smoothstep and final complete face");
+        hidden.keepFaceBlurred=true;Check(hidden.FaceRevealAmount(146)==0f,"Turning reveal off hides face even at last preview frame");
+        hidden.keepFaceBlurred=false;Check(hidden.FaceRevealAmount(146)==1f,"Turning reveal back on restores original behaviour");
+
         var o=Options(100,10);
         Check(o.ReverseSeconds==97,"Flower disappearance stays at target minus reveal time");
         Check(o.TotalRotationTurns==10&&Near(o.RevealStartSeconds,100),"Finish tenth turn before revealing");
