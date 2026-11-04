@@ -189,7 +189,6 @@ public class MidFaceEraseMask : MonoBehaviour
             _boundImage = true;
         }
         float now = Time.unscaledTime;
-        bool holding = paired && _runner.PreviewIsHoldingFace;
         bool hasPair = !waiting && _controller != null && _controller.HasFace
             && (paired ? _runner.PreviewHasFace : now - _controller.LastResultTime < 0.5f);
         if (hasPair && _controller.ResultVersion != _version)
@@ -209,13 +208,12 @@ public class MidFaceEraseMask : MonoBehaviour
             for (int i = 0; i < MaximumFaces; i++)
             {
                 if (_faces[i] != null) _faces[i].MarkMissing();
-                // Keep overlays only while the runner still owns the exact
-                // same held camera pixels. Raw/live frames must have no ghosts.
-                if (!holding && _layers[i] != null) _layers[i].enabled = false;
+                // Keep the camera moving; remove only the missing face's
+                // overlay rather than freezing the entire exhibition image.
+                if (_layers[i] != null) _layers[i].enabled = false;
             }
         }
-        // Detection loss is never a reason to black out the camera. The runner
-        // holds briefly, then publishes fresh camera frames without stale masks.
+        // Detection loss never blacks out or deliberately freezes the camera.
         _videoVisibility = 1f;
 
         ApplyBase(_baseMaterial);
@@ -243,8 +241,7 @@ public class MidFaceEraseMask : MonoBehaviour
             if (_faces[i] != null)
             {
                 if (_plants[i] == null && growNarcissus) _plants[i] = new NarcissusFaceGrowth(this);
-                // Freeze flowers with the held skin frame, including particles.
-                if (_plants[i] != null && !holding) _plants[i].Update(_faces[i], _layers[i], _cameraWidth, _cameraHeight, _videoVisibility);
+                if (_plants[i] != null) _plants[i].Update(_faces[i], _layers[i], _cameraWidth, _cameraHeight, _videoVisibility);
             }
         }
         foreach (var item in _pointVisuals)

@@ -50,7 +50,6 @@ static class Mathf
 class Config { public int NumFaces = 12; }
 class PreviewChecks
 {
-    public float trackingLossHoldSeconds = 1f;
     bool _synchronizeThisRun = true;
     RenderTexture[] _previewBuffers = { new RenderTexture(), new RenderTexture() };
     Texture _originalPreviewTexture = new Texture();
@@ -71,36 +70,38 @@ class PreviewChecks
         var p = new PreviewChecks();
         p.Publish(0f, true, default);
         Check(p.screen.texture == p._previewBuffers[1], "Empty startup publishes camera instead of waiting for a face.");
-        Check(!p.PreviewIsHoldingFace && !p.PreviewHasFace, "Empty startup has no hold.");
+        Check(!p.PreviewHasFace, "Empty startup has no face.");
         p.Publish(1f, true, FaceResult());
-        var held = p.screen.texture;
+        var previous = p.screen.texture;
         int draws = p._faceLandmarkerResultAnnotationController.Calls;
-        p.Publish(1.2f, true, default);
-        p.Publish(1.9f, false, FaceResult());
-        Check(p.PreviewIsHoldingFace && !p.PreviewHasFace, "Brief missing/failed inference holds.");
-        Check(p.screen.texture == held, "Capture must not replace presented buffer during hold.");
-        Check(p._faceLandmarkerResultAnnotationController.Calls == draws, "Hold retains matched geometry.");
-        Check(p.LastMatchedFrameTime == 1f, "Missing frames do not extend hold clock.");
-        p.Publish(2.01f, true, default);
-        Check(!p.PreviewIsHoldingFace && p.screen.texture != held, "Expired hold returns to fresh camera.");
-        Check(p._faceLandmarkerResultAnnotationController.Last.faceLandmarks == null, "Fresh raw camera has no stale landmarks.");
+        p.Publish(1.01f, true, default);
+        Check(!p.PreviewHasFace && p.screen.texture != previous, "First missing face frame must advance immediately.");
+        Check(p._faceLandmarkerResultAnnotationController.Calls == draws + 1, "Missing frame publishes empty geometry immediately.");
+        Check(p._faceLandmarkerResultAnnotationController.Last.faceLandmarks == null, "Fresh camera has no stale face.");
+        previous = p.screen.texture;
+        p.Publish(1.02f, false, FaceResult());
+        Check(p.screen.texture != previous && !p.PreviewHasFace, "Failed inference advances camera and removes stale detection.");
         p.Publish(2.1f, true, FaceResult());
-        Check(p.PreviewHasFace && !p.PreviewIsHoldingFace, "Reacquisition publishes new matched pair immediately.");
+        Check(p.PreviewHasFace, "Reacquisition publishes new matched pair immediately.");
         p.Publish(2.2f, true, FaceResult(467));
-        Check(p.PreviewIsHoldingFace, "Incomplete landmarks count as missing.");
+        Check(!p.PreviewHasFace && p.LastMatchedFrameTime == 2.2f, "Incomplete landmarks still publish current camera.");
         var twelve = new FaceLandmarkerResult { faceLandmarks = new List<Face>() };
         for (int i = 0; i < 11; i++) twelve.faceLandmarks.Add(new Face());
         twelve.faceLandmarks.Add(FaceResult().faceLandmarks[0]);
         p.Publish(2.3f, true, twelve);
         Check(p.PreviewHasFace, "Twelfth valid detection is accepted.");
-        p.trackingLossHoldSeconds = 0f;
-        p.Publish(2.4f, true, default);
-        Check(!p.PreviewIsHoldingFace, "Zero hold publishes camera immediately.");
-        p.trackingLossHoldSeconds = 1f;
-        p.Publish(3f, true, FaceResult());
-        p.Publish(3.1f, true, default);
+        for (int frame = 0; frame < 120; frame++)
+        {
+            previous = p.screen.texture;
+            int before = p._faceLandmarkerResultAnnotationController.Calls;
+            bool visible = frame % 3 == 0;
+            p.Publish(3f + frame / 30f, true, visible ? twelve : default);
+            Check(p.screen.texture != previous, "Repeated arrivals/departures must never hold preview buffer.");
+            Check(p._faceLandmarkerResultAnnotationController.Calls == before + 1, "Every completed capture publishes exactly one detection snapshot.");
+            Check(p.PreviewHasFace == visible, "Face presence follows the current frame.");
+        }
         p.ReleasePairedPreview();
-        Check(!p.PreviewIsHoldingFace && !p.PreviewHasFace && p.LastMatchedFrameTime < 0f, "Camera restart clears held state.");
+        Check(!p.PreviewHasFace && p.LastMatchedFrameTime < 0f, "Camera restart clears preview state.");
         Check(p.screen.texture == p._originalForTest, "Camera stop restores original texture.");
         p._synchronizeThisRun = false;
         p.Publish(4f, true, FaceResult());
