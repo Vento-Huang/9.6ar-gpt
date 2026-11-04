@@ -25,7 +25,9 @@ namespace Mediapipe.Unity
     public bool HasFacePose { get; private set; }
     public Matrix4x4 FacePose { get; private set; } = Matrix4x4.identity;
     public int FaceCount { get; private set; }
-    private const int MaxEffectFaces = 6;
+    // Runtime cannot reference the Sample assembly. Keep this snapshot ceiling
+    // at least as high as the sample's twelve-face detector/track capacity.
+    private const int MaxEffectFaces = 12;
     private readonly bool[] _validFaces = new bool[MaxEffectFaces];
     private readonly bool[] _validPoses = new bool[MaxEffectFaces];
     private readonly Matrix4x4[] _facePoses = new Matrix4x4[MaxEffectFaces];

@@ -18,9 +18,14 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
     [Tooltip("Display each camera frame together with its detection result. Takes effect when the camera restarts.")]
     public bool synchronizePreviewWithDetection = true;
 
+    [Tooltip("Hold the last matched face and flowers during a brief tracking loss, then return to live camera instead of black. Seconds.")]
+    [Range(0f, 2f)] public float trackingLossHoldSeconds = 1f;
+
     public bool PreviewIsSynchronized => _synchronizeThisRun && _previewBuffers != null;
     public bool PreviewHasFace { get; private set; }
+    public bool PreviewIsHoldingFace { get; private set; }
     public float LastMatchedFrameTime { get; private set; } = -100f;
+    private float _lastDetectedFrameTime = -100f;
 
     private Experimental.TextureFramePool _textureFramePool;
     private RenderTexture[] _previewBuffers;
@@ -239,6 +244,8 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
       finally { RenderTexture.active = previous; }
       _presentedBuffer = 0;
       PreviewHasFace = false;
+      PreviewIsHoldingFace = false;
+      _lastDetectedFrameTime = -100f;
       LastMatchedFrameTime = -100f;
       screen.texture = _previewBuffers[_presentedBuffer];
     }
@@ -258,13 +265,18 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
           if (result.faceLandmarks[i].landmarks != null && result.faceLandmarks[i].landmarks.Count >= 468)
           { PreviewHasFace = true; break; }
       }
-      if (!PreviewHasFace)
+      PreviewIsHoldingFace = !PreviewHasFace && _lastDetectedFrameTime >= 0f
+        && Time.unscaledTime - _lastDetectedFrameTime <= Mathf.Clamp(trackingLossHoldSeconds, 0f, 2f);
+      if (PreviewIsHoldingFace)
       {
-        // Keep the last matching pixels AND geometry. The effect controller
-        // can hold briefly then fade to black without revealing raw features.
+        // Keep pixels, geometry, skin and flowers together for brief losses.
+        // The non-presented buffer remains the capture target during the hold.
         return;
       }
-      _faceLandmarkerResultAnnotationController.DrawNow(result);
+      if (PreviewHasFace) _lastDetectedFrameTime = Time.unscaledTime;
+      // Empty scenes also need fresh camera pixels, including before the first
+      // face. Publish an empty result so no old face is painted onto live video.
+      _faceLandmarkerResultAnnotationController.DrawNow(PreviewHasFace ? result : default);
       _presentedBuffer = captureIndex;
       screen.texture = _previewBuffers[_presentedBuffer];
       LastMatchedFrameTime = Time.unscaledTime;
@@ -286,6 +298,8 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
       _previewBuffers = null;
       _originalPreviewTexture = null;
       PreviewHasFace = false;
+      PreviewIsHoldingFace = false;
+      _lastDetectedFrameTime = -100f;
       LastMatchedFrameTime = -100f;
     }
 

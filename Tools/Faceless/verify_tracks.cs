@@ -24,39 +24,51 @@ static class FacelessTrackTests
 
     static void Main()
     {
-        SixFacesKeepSlotsWhenDetectionOrderChanges();
+        TwelveFacesKeepSlotsWhenDetectionOrderChanges();
         MissingTrackResumesThenExpires();
         NewcomerReplacesOnlyUnmatchedSlotAtCapacity();
         AssignmentUsesGlobalCost();
         VelocityPreservesTracksThroughAResolvableCrossing();
         RelativeSizeAndInvalidBoundsAreRejected();
         ClockRestartAndResetCreateFreshState();
+        DetectionCountIsCappedAtTwelve();
         Console.WriteLine("PASS: " + _checks + " geometric tracking checks (standalone C#, not Unity).");
     }
 
-    static void SixFacesKeepSlotsWhenDetectionOrderChanges()
+    static void TwelveFacesKeepSlotsWhenDetectionOrderChanges()
     {
         var tracker = new FacelessTrackAssigner();
-        var bounds = new Rect[6];
-        for (int i = 0; i < 6; i++) bounds[i] = Face(i * 150f);
-        tracker.Update(bounds, 6, 0f, 3f);
+        var bounds = new Rect[12];
+        for (int i = 0; i < 12; i++) bounds[i] = Face(i * 150f);
+        tracker.Update(bounds, 12, 0f, 3f);
         int[] slots = (int[])tracker.DetectionToSlot.Clone();
         int[] ids = (int[])tracker.TrackIds.Clone();
-        for (int i = 0; i < 6; i++)
+        for (int i = 0; i < 12; i++)
         {
             Check(slots[i] == i, "First detections use separate slots.");
             Check(ids[i] > 0 && tracker.SlotIsNew[i], "A new slot needs a fresh ID and reset signal.");
         }
-        int[] order = { 5, 2, 0, 4, 1, 3 };
-        for (int i = 0; i < 6; i++) bounds[i] = Face(order[i] * 150f + 2f);
-        tracker.Update(bounds, 6, 0.033f, 3f);
-        for (int i = 0; i < 6; i++)
+        int[] order = { 11, 5, 2, 8, 0, 10, 4, 7, 1, 9, 3, 6 };
+        for (int i = 0; i < 12; i++) bounds[i] = Face(order[i] * 150f + 2f);
+        tracker.Update(bounds, 12, 0.033f, 3f);
+        for (int i = 0; i < 12; i++)
         {
             int slot = tracker.DetectionToSlot[i];
             Check(slot == slots[order[i]], "Detection reordering must not exchange effects.");
             Check(tracker.TrackIds[slot] == ids[slot], "Reordered detection retains ID.");
             Check(!tracker.SlotIsNew[slot], "Continuous detection must not restart entrance.");
         }
+    }
+
+    static void DetectionCountIsCappedAtTwelve()
+    {
+        var tracker = new FacelessTrackAssigner();
+        var bounds = new Rect[13];
+        for (int i = 0; i < bounds.Length; i++) bounds[i] = Face(i * 150f);
+        tracker.Update(bounds, 13, 0f, 3f);
+        Check(tracker.DetectionToSlot.Length == 12, "Production capacity is exactly twelve.");
+        for (int i = 0; i < 12; i++)
+            Check(tracker.DetectionToSlot[i] >= 0, "Thirteenth input does not displace the first twelve.");
     }
 
     static void MissingTrackResumesThenExpires()
@@ -81,18 +93,18 @@ static class FacelessTrackTests
     static void NewcomerReplacesOnlyUnmatchedSlotAtCapacity()
     {
         var tracker = new FacelessTrackAssigner();
-        var bounds = new Rect[6];
-        for (int i = 0; i < 6; i++) bounds[i] = Face(i * 150f);
-        tracker.Update(bounds, 6, 0f, 3f);
+        var bounds = new Rect[12];
+        for (int i = 0; i < 12; i++) bounds[i] = Face(i * 150f);
+        tracker.Update(bounds, 12, 0f, 3f);
         int[] ids = (int[])tracker.TrackIds.Clone();
-        // New face comes first in the detector output. Slot 5 is missing;
-        // slots 0..4 must be reserved before the new face chooses a slot.
+        // New face comes first in the detector output. Slot 11 is missing;
+        // slots 0..10 must be reserved before the new face chooses a slot.
         bounds[0] = Face(2000f);
-        for (int i = 1; i < 6; i++) bounds[i] = Face((i - 1) * 150f);
-        tracker.Update(bounds, 6, 0.05f, 3f);
-        Check(tracker.DetectionToSlot[0] == 5, "A seventh arrival must replace the unseen sixth slot.");
-        Check(tracker.TrackIds[5] != ids[5] && tracker.SlotIsNew[5], "Replacement cannot inherit the previous skin or animation.");
-        for (int i = 1; i < 6; i++)
+        for (int i = 1; i < 12; i++) bounds[i] = Face((i - 1) * 150f);
+        tracker.Update(bounds, 12, 0.05f, 3f);
+        Check(tracker.DetectionToSlot[0] == 11, "A thirteenth arrival must replace the unseen twelfth slot.");
+        Check(tracker.TrackIds[11] != ids[11] && tracker.SlotIsNew[11], "Replacement cannot inherit the previous skin or animation.");
+        for (int i = 1; i < 12; i++)
         {
             Check(tracker.DetectionToSlot[i] == i - 1, "Newcomer must not steal a later visible match.");
             Check(tracker.TrackIds[i - 1] == ids[i - 1], "Existing visible track must keep ID at capacity.");

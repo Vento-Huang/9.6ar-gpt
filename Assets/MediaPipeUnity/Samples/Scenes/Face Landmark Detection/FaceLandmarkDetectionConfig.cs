@@ -21,7 +21,7 @@ namespace Mediapipe.Unity.Sample.FaceLandmarkDetection
 
     public Tasks.Vision.Core.RunningMode RunningMode { get; set; } = Tasks.Vision.Core.RunningMode.LIVE_STREAM;
 
-    public const int MaximumFaces = 6;
+    public const int MaximumFaces = global::FacelessTrackAssigner.Capacity;
     private int _numFaces = MaximumFaces;
     public int NumFaces
     {

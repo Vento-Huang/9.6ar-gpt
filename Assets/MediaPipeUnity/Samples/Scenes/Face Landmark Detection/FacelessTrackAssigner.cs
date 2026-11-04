@@ -2,14 +2,14 @@ using System;
 using UnityEngine;
 
 /// <summary>
-/// Associates up to six camera-space detections with temporary geometric tracks.
+/// Associates up to twelve camera-space detections with temporary geometric tracks.
 /// Detection order may change on every frame. This is not identity recognition:
 /// indistinguishable crossings or complete occlusion can still exchange tracks.
 /// Reuses all working arrays after construction.
 /// </summary>
 public sealed class FacelessTrackAssigner
 {
-    public const int Capacity = 6;
+    public const int Capacity = 12;
     const int AssignmentStates = 1 << Capacity;
     const float NewDetectionCost = 1.65f;
 
@@ -39,7 +39,7 @@ public sealed class FacelessTrackAssigner
 
     /// <summary>
     /// Bounds must all use the same camera-pixel coordinate system. Only the
-    /// first six detections are accepted; invalid/empty rectangles map to -1.
+    /// first Capacity detections are accepted; invalid/empty rectangles map to -1.
     /// SlotIsNew is true for one update when a slot is allocated or replaced:
     /// the caller must reset that slot's skin sampling, smoothing and entrance.
     /// Unseen tracks retain their IDs until forgetSeconds elapses, unless a
@@ -127,7 +127,7 @@ public sealed class FacelessTrackAssigner
             int detection = _validDetections[row];
             if (DetectionToSlot[detection] >= 0) continue;
             int slot = AvailableSlot();
-            // At most six valid inputs: an unmatched input always has either
+            // At most Capacity valid inputs: an unmatched input always has either
             // a free slot or an unseen slot available for replacement.
             DetectionToSlot[detection] = slot;
             Observe(slot, detectedBounds[detection], now, true);
