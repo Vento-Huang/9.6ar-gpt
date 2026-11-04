@@ -58,7 +58,7 @@ public class MidFaceEraseMask : MonoBehaviour
     public bool showMask = false;
     public bool showControls = true;
 
-    public const int MaximumFaces = 6;
+    public const int MaximumFaces = FaceLandmarkDetectionConfig.MaximumFaces;
     public int ActiveFaceCount { get; private set; }
     public bool IsTracking => ActiveFaceCount > 0;
     public float FacePresence => IsTracking ? 1f : 0f;
@@ -89,7 +89,7 @@ public class MidFaceEraseMask : MonoBehaviour
     Material _baseMaterial, _originalMaterial;
     bool _boundImage, _wasPaired, _waitingForCamera, _replayAllRequested;
     int _version = -1, _cameraWidth, _cameraHeight;
-    float _nextFind, _nextShaderCheck, _lastSeen = -100f, _lastPair = -100f;
+    float _nextFind, _nextShaderCheck, _lastPair = -100f;
     float _videoVisibility = 1f, _captureFps;
     FacelessFaceRenderer Primary
     {
@@ -106,7 +106,7 @@ public class MidFaceEraseMask : MonoBehaviour
         var legacyRenderer = GetComponent<MeshRenderer>();
         if (legacyRenderer != null) legacyRenderer.enabled = false;
         _nextFind = _nextShaderCheck = 0f;
-        _lastSeen = _lastPair = -100f;
+        _lastPair = -100f;
         _version = -1; _videoVisibility = 1f; _captureFps = 0f;
         _waitingForCamera = _replayAllRequested = false; ActiveFaceCount = 0;
         _assigner.Reset();
@@ -188,7 +188,8 @@ public class MidFaceEraseMask : MonoBehaviour
             screenImage.material = _baseMaterial;
             _boundImage = true;
         }
-        float now = Time.unscaledTime, dt = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+        float now = Time.unscaledTime;
+        bool holding = paired && _runner.PreviewIsHoldingFace;
         bool hasPair = !waiting && _controller != null && _controller.HasFace
             && (paired ? _runner.PreviewHasFace : now - _controller.LastResultTime < 0.5f);
         if (hasPair && _controller.ResultVersion != _version)
@@ -198,9 +199,6 @@ public class MidFaceEraseMask : MonoBehaviour
                 _captureFps = _captureFps <= 0f ? 1f / interval : Mathf.Lerp(_captureFps, 1f / interval, 0.2f);
             _lastPair = now;
             ProcessFaces(source, now, interval, paired);
-            // No usable skin output for this newly published face frame:
-            // hide immediately instead of fading in unprocessed features.
-            if (paired && ActiveFaceCount == 0) _videoVisibility = 0f;
             _version = _controller.ResultVersion;
             RefreshVisuals();
         }
@@ -211,22 +209,14 @@ public class MidFaceEraseMask : MonoBehaviour
             for (int i = 0; i < MaximumFaces; i++)
             {
                 if (_faces[i] != null) _faces[i].MarkMissing();
-                // Only paired preview owns/fixes the old pixels. Never draw a
-                // stale face over a live unpaired camera texture.
-                if (!paired && _layers[i] != null) _layers[i].enabled = false;
+                // Keep overlays only while the runner still owns the exact
+                // same held camera pixels. Raw/live frames must have no ghosts.
+                if (!holding && _layers[i] != null) _layers[i].enabled = false;
             }
         }
-        // A person's departure never darkens everyone else. The previous
-        // all-faces-lost hold/fade applies only when the whole detector is empty.
-        if (waiting) _videoVisibility = 0f;
-        else if (hasPair && ActiveFaceCount > 0)
-        {
-            _lastSeen = now;
-            _videoVisibility = Mathf.MoveTowards(_videoVisibility, 1f, dt / 0.18f);
-        }
-        else if (paired && now - _lastSeen > 0.18f)
-            _videoVisibility = Mathf.MoveTowards(_videoVisibility, 0f, dt / 0.25f);
-        else if (!paired) _videoVisibility = 1f;
+        // Detection loss is never a reason to black out the camera. The runner
+        // holds briefly, then publishes fresh camera frames without stale masks.
+        _videoVisibility = 1f;
 
         ApplyBase(_baseMaterial);
         var baseDrawing = screenImage.materialForRendering;
@@ -253,7 +243,8 @@ public class MidFaceEraseMask : MonoBehaviour
             if (_faces[i] != null)
             {
                 if (_plants[i] == null && growNarcissus) _plants[i] = new NarcissusFaceGrowth(this);
-                if (_plants[i] != null) _plants[i].Update(_faces[i], _layers[i], _cameraWidth, _cameraHeight, _videoVisibility);
+                // Freeze flowers with the held skin frame, including particles.
+                if (_plants[i] != null && !holding) _plants[i].Update(_faces[i], _layers[i], _cameraWidth, _cameraHeight, _videoVisibility);
             }
         }
         foreach (var item in _pointVisuals)
@@ -350,7 +341,7 @@ public class MidFaceEraseMask : MonoBehaviour
     }
     void FitLayer(RawImage layer, Rect faceBounds)
     {
-        // Crop each UI draw to its face bounds; never shade six full screens.
+        // Crop each UI draw to its face bounds; never shade twelve full screens.
         // Anchor coordinates account for uvRect mirroring and source rotation.
         Rect uv = screenImage.uvRect;
         float x0 = (faceBounds.xMin - 2f) / _cameraWidth, x1 = (faceBounds.xMax + 2f) / _cameraWidth;
@@ -433,7 +424,7 @@ public class MidFaceEraseMask : MonoBehaviour
         if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.R)
         { ReplayEntry(); Event.current.Use(); }
         if (!showControls) return;
-        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 428), DrawControls, "Faceless / 6 faces");
+        GUI.Window(GetInstanceID(), new Rect(UnityEngine.Screen.width - 244, 12, 232, 428), DrawControls, "Faceless / " + MaximumFaces + " faces");
     }
     void DrawControls(int id)
     {
@@ -459,7 +450,7 @@ public class MidFaceEraseMask : MonoBehaviour
     void ResetTracks()
     {
         _assigner.Reset(); _version = -1; ActiveFaceCount = 0;
-        _lastPair = _lastSeen = -100f; _captureFps = 0f;
+        _lastPair = -100f; _captureFps = 0f;
         for (int i = 0; i < MaximumFaces; i++)
         {
             if (_plants[i] != null) { _plants[i].Dispose(); _plants[i] = null; }

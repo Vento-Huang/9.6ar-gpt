@@ -1,5 +1,5 @@
 // Compile this file WITH the actual FacelessFaceRenderer.cs, without Unity.
-// Narrow managed stubs validate six independent entry clocks, state ownership,
+// Narrow managed stubs validate twelve independent entry clocks, state ownership,
 // resource cleanup and failure handling. They do NOT validate Unity, shaders,
 // MediaPipe, real camera matching, GPU rendering or the accepted geometry.
 using System;
@@ -32,8 +32,8 @@ public static class FaceRendererChecks
     {
         var settings = new MidFaceEraseMask();
         var raw = new Texture { width = 1280, height = 720 };
-        var faces = new FacelessFaceRenderer[6];
-        var points = new Vector2[6][];
+        var faces = new FacelessFaceRenderer[12];
+        var points = new Vector2[12][];
         var composites = new HashSet<Material>();
         var skins = new HashSet<Texture>();
         var donorTextures = new HashSet<Texture>();
@@ -46,7 +46,7 @@ public static class FaceRendererChecks
             faces[i] = new FacelessFaceRenderer(settings);
             faces[i].Reset(100 + i);
             points[i] = Points(i * 140);
-            float start = i * 0.4f;
+            float start = i * (2f / (faces.Length - 1));
             Graphics.Calls.Clear();
             Check(faces[i].Update(raw, points[i], Matrix4x4.identity, true, start, 99f, true), "initial face " + i);
             Near(faces[i].PresentationSeconds, 0f, "first usable frame must ignore elapsed " + i);
@@ -66,9 +66,9 @@ public static class FaceRendererChecks
             Near(faces[i].EntryProgress, t * t * (3f - 2f * t), "independent entry weight " + i);
             Check(RenderTexture.active == sentinel && GL.sRGBWrite, "restore render globals " + i);
         }
-        Check(composites.Count == 6, "six separate composite materials");
-        Check(skins.Count == 6 && !skins.Contains(null), "six separate skin histories");
-        Check(donorTextures.Count == 6, "six separate cheek-sample buffers");
+        Check(composites.Count == 12, "twelve separate composite materials");
+        Check(skins.Count == 12 && !skins.Contains(null), "twelve separate skin histories");
+        Check(donorTextures.Count == 12, "twelve separate cheek-sample buffers");
 
         var paused = faces[1];
         float pausedClock = paused.PresentationSeconds;
@@ -87,7 +87,7 @@ public static class FaceRendererChecks
         Check(!HasTemporalPass(), "reacquire refreshes sampling instead of blending stale skin");
         Check(paused.Update(raw, points[1], Matrix4x4.identity, true, 9.2f, 0.2f, true), "resumed face");
         Near(paused.PresentationSeconds, pausedClock + 0.2f, "valid elapsed resumes after reacquisition");
-        Near(faces[5].PresentationSeconds, 0f, "updating one person does not advance another");
+        Near(faces[faces.Length - 1].PresentationSeconds, 0f, "updating one person does not advance another");
 
         var replayed = faces[2];
         replayed.MarkMissing();
